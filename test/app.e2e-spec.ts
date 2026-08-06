@@ -3,14 +3,25 @@ import {
   FastifyAdapter,
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import { AppModule } from './../src/app.module';
+import { AppController } from './../src/app.controller';
+import { AppService } from './../src/app.service';
 
+/**
+ * Exercises the real HTTP stack (Fastify routing -> controller) without
+ * booting AppModule, which now pulls in DatabaseModule and would require a
+ * live AWS RDS instance just to assert on a static route.
+ *
+ * Once entities exist, add a separate suite that imports AppModule against a
+ * throwaway test database (a `.env.test` pointing at a local or containerised
+ * Postgres) so the persistence layer is covered too.
+ */
 describe('AppController (e2e)', () => {
   let app: NestFastifyApplication;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
+      controllers: [AppController],
+      providers: [AppService],
     }).compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
@@ -27,6 +38,8 @@ describe('AppController (e2e)', () => {
   });
 
   afterEach(async () => {
-    await app.close();
+    // Guard: if beforeEach threw, `app` is undefined and an unguarded
+    // close() masks the real failure with a TypeError.
+    if (app) await app.close();
   });
 });
