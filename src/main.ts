@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import {
@@ -6,6 +6,10 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { setupSwagger } from './config/swagger.config';
+import { VALIDATION_PIPE_OPTIONS } from './config/validation.config';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -19,17 +23,30 @@ async function bootstrap() {
   const host = config.get<string>('HOST', '0.0.0.0');
   const apiPrefix = config.get<string>('API_PREFIX', 'api');
   const apiVersion = config.get<string>('API_VERSION', 'v1');
+  const globalPrefix = `${apiPrefix}/${apiVersion}`;
 
-  app.setGlobalPrefix(`${apiPrefix}/${apiVersion}`);
+  app.setGlobalPrefix(globalPrefix);
   app.enableCors({ origin: config.get<string>('CORS_ORIGIN', '*') });
+
+  app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
+
+  // One consistent envelope for both outcomes: the interceptor wraps
+  // successes, the filter wraps every failure.
+  app.useGlobalInterceptors(new ResponseInterceptor());
+  app.useGlobalFilters(new AllExceptionsFilter());
+
+  const swaggerPath = setupSwagger(app, config);
 
   await app.listen(port, host);
 
+  const base = `http://${host}:${port}`;
   Logger.log(
     `${config.get<string>('APP_NAME', 'app')} running in ` +
-      `${config.get<string>('NODE_ENV', 'local')} mode on ` +
-      `http://${host}:${port}/${apiPrefix}/${apiVersion}`,
+      `${config.get<string>('NODE_ENV', 'local')} mode on ${base}/${globalPrefix}`,
     'Bootstrap',
   );
+  Logger.log(`Health check at ${base}/${globalPrefix}/health`, 'Bootstrap');
+  if (swaggerPath)
+    Logger.log(`API docs at ${base}/${swaggerPath}`, 'Bootstrap');
 }
 void bootstrap();

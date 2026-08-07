@@ -105,6 +105,22 @@ export function apiError(
 }
 
 /**
+ * True when a value is already one of our envelopes. Lets the global
+ * interceptor pass through handlers that called successResponse()
+ * themselves instead of wrapping the envelope in a second envelope.
+ */
+export function isApiResponse(value: unknown): value is ApiResponse<unknown> {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.success === 'boolean' &&
+    typeof candidate.statusCode === 'number' &&
+    typeof candidate.timestamp === 'string' &&
+    'data' in candidate
+  );
+}
+
+/**
  * Narrow an unknown thrown value to a message. `catch` blocks receive
  * `unknown`, and a non-Error can be thrown from anywhere in JS.
  */

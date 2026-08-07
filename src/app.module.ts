@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
+import { HealthModule } from './health/health.module';
 
 // NODE_ENV picks the override file; `.env` is always the fallback beneath it.
 // ConfigModule gives the FIRST file that defines a variable precedence, so the
@@ -17,6 +18,7 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
       envFilePath: [`.env.${nodeEnv}`, '.env'],
     }),
     DatabaseModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
