@@ -1,0 +1,335 @@
+generator client {
+  provider     = "prisma-client"
+  // Prisma 7's documented convention — generating back into
+  // node_modules/@prisma/client conflicts with the package skeleton that
+  // `npm install @prisma/client` puts there. Every import in this codebase
+  // goes through src/prisma/client.ts rather than pointing at this path
+  // directly, so it only needs to be correct in one place.
+  output       = "../generated/prisma"
+  // Prisma 7 defaults to ESM output; this codebase (ts-node, nest build,
+  // CommonJS throughout) needs CJS or every runtime entrypoint breaks with
+  // "exports is not defined in ES module scope".
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =====================================================================
+// 01 · CATALOG (stub — module 3 isn't built yet, see CatalogModule)
+// =====================================================================
+
+model City {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name     String
+  state    String
+  timezone String
+  isActive Boolean  @default(true)
+
+  addresses CustomerAddress[]
+  pros      Pro[]
+
+  @@index([isActive])
+  @@map("cities")
+}
+
+// =====================================================================
+// 02 · IDENTITY & ACCESS
+// =====================================================================
+
+model Role {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name            String  @unique
+  description     String?
+  permissionCodes Json    @default("[]")
+  isSystemRole    Boolean @default(false)
+
+  adminUsers AdminUser[]
+
+  @@map("roles")
+}
+
+model AdminUser {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  phone String @unique
+  fullName String
+  email String?
+
+  roleId String @db.Uuid
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  /// City ids this admin may act on; empty array = platform-wide.
+  cityScopeJson Json @default("[]")
+
+  pushToken          String?
+  pushPlatform        String?
+  pushTokenUpdatedAt DateTime?
+
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime?
+
+  @@map("admin_users")
+}
+
+/// Append-only: never updated, never deleted. Every admin-mutating endpoint
+/// writes one row here via AuditLogService.
+model AdminAuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  adminUserId String @db.Uuid
+  action      String
+  entityType  String
+  entityId    String
+  beforeJson  Json?
+  afterJson   Json?
+  ipAddress   String?
+
+  @@index([adminUserId])
+  @@index([entityType])
+  @@index([entityId])
+  @@map("admin_audit_logs")
+}
+
+// =====================================================================
+// 03 · CUSTOMER PROFILE
+// =====================================================================
+
+model Customer {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Stable per-install id — the guest identity before a phone is attached.
+  deviceId String? @unique
+  /// Null while guest; becomes the auth key once verified.
+  phone    String? @unique
+  /// Invoice delivery only — never a login credential.
+  email    String?
+  fullName String?
+
+  status     String    @default("guest")
+  verifiedAt DateTime?
+
+  /// Populated later by the Payments module on first gateway checkout.
+  razorpayCustomerId String? @unique
+
+  pushToken          String?
+  pushPlatform       String?
+  pushTokenUpdatedAt DateTime?
+
+  defaultAddressId String? @db.Uuid
+  isBlocked        Boolean @default(false)
+
+  addresses CustomerAddress[]
+
+  @@map("customers")
+}
+
+model CustomerAddress {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customerId String   @db.Uuid
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  label       String  @default("other")
+  addressLine String
+  landmark    String?
+
+  /// Exact pinned coordinate — the Pro is routed to this, not the street text.
+  pinLat Float
+  pinLng Float
+
+  /// GeoJSON Point, e.g. { type: 'Point', coordinates: [lng, lat] } — a
+  /// convenience mirror for clients; pinLat/pinLng are what queries use.
+  geoPoint Json?
+
+  cityId String @db.Uuid
+  city   City   @relation(fields: [cityId], references: [id], onDelete: Restrict)
+
+  isDefault Boolean @default(false)
+
+  @@index([customerId])
+  @@index([cityId])
+  @@map("customer_addresses")
+}
+
+// =====================================================================
+// 04 · PRO MANAGEMENT
+// =====================================================================
+
+/// Three gates to dispatchability, all admin-set: status = approved, at
+/// least one active ProService, isAvailable = true.
+model Pro {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  phone    String  @unique
+  fullName String?
+  email    String?
+
+  /// Payroll identity — payroll itself is external to this system.
+  employeeCode String? @unique
+  /// Bookkeeping only — this system never pays salary, only commission.
+  monthlySalary   Decimal?  @db.Decimal(12, 2)
+  salaryUpdatedAt DateTime?
+
+  status String @default("applied")
+
+  approvedApplicationId String?         @unique @db.Uuid
+  approvedApplication   ProApplication? @relation("ApprovedApplication", fields: [approvedApplicationId], references: [id], onDelete: SetNull)
+
+  /// GATE: on/off duty. Set only by an admin, never by the Pro.
+  isAvailable            Boolean   @default(false)
+  availabilityUpdatedAt DateTime?
+
+  pushToken          String?
+  pushPlatform       String?
+  pushTokenUpdatedAt DateTime?
+
+  homeBaseLat Float?
+  homeBaseLng Float?
+
+  /// Cold fallback only — live position lives in Redis GEO (Geo & Routing).
+  lastKnownLat  Float?
+  lastKnownLng  Float?
+  lastLocationAt DateTime?
+
+  cityId String? @db.Uuid
+  city   City?   @relation(fields: [cityId], references: [id], onDelete: Restrict)
+
+  // Exact integer counters, rebuilt nightly once Reviews/Dispatch exist.
+  // Nothing in this pass writes them — declared for column shape only.
+  ratingSum               Int      @default(0)
+  ratingCount             Int      @default(0)
+  assignmentsOffered      Int      @default(0)
+  assignmentsAcknowledged Int      @default(0)
+  /// Analytics only — never a ranking or pay input.
+  acceptanceRate          Float?
+  completedJobs           Int      @default(0)
+  countersRebuiltAt       DateTime?
+
+  /// Employment start date.
+  approvedAt DateTime?
+
+  applications ProApplication[] @relation("ProApplications")
+  services     ProService[]
+  bankAccounts ProBankAccount[]
+
+  @@index([status])
+  @@index([isAvailable])
+  @@index([cityId])
+  @@map("pros")
+}
+
+/// One row per attempt — a rejected Pro re-applying creates a new row, the
+/// old one and its documents are preserved. Pro.approvedApplicationId points
+/// at whichever row actually succeeded.
+model ProApplication {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId String @db.Uuid
+  pro   Pro    @relation("ProApplications", fields: [proId], references: [id], onDelete: Cascade)
+
+  referredByType String  @default("none")
+  referredById   String?
+
+  submittedAt DateTime?
+  queueStatus String    @default("pending")
+
+  // Aadhaar — independently sourced and verified from PAN.
+  aadhaarSource           String?
+  aadhaarUrl              String?
+  aadhaarNumberMasked     String?
+  aadhaarStatus           String  @default("pending")
+  /// 'system' when DigiLocker auto-verified — never left null on verify.
+  aadhaarVerifiedByAdminId String?
+  aadhaarVerifiedAt       DateTime?
+  aadhaarRejectionReason  String?
+
+  // PAN — independent of aadhaarSource.
+  panSource           String?
+  panUrl              String?
+  panNumberMasked     String?
+  panStatus           String  @default("pending")
+  panVerifiedByAdminId String?
+  panVerifiedAt       DateTime?
+  panRejectionReason  String?
+
+  /// Consent/fetch reference; the token itself is discarded after the fetch.
+  digilockerRequestId String?
+  digilockerFetchedAt DateTime?
+
+  reviewedByAdminId  String?
+  verificationCallAt DateTime?
+
+  decision       String?
+  decisionAt     DateTime?
+  rejectionReason String?
+
+  approvedByPro Pro? @relation("ApprovedApplication")
+
+  @@index([proId])
+  @@index([queueStatus])
+  @@map("pro_applications")
+}
+
+/// ProService(proId, serviceId) is the single source of truth for skill
+/// matching. serviceId has no FK/relation yet because the Service catalog
+/// table (module 3) doesn't exist; it's validated as an opaque string.
+model ProService {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId String @db.Uuid
+  pro   Pro    @relation(fields: [proId], references: [id], onDelete: Cascade)
+
+  serviceId String
+
+  proficiency  String    @default("trainee")
+  certifiedAt DateTime?
+  /// Suspend one service without suspending the whole Pro.
+  isActive     Boolean   @default(true)
+
+  @@unique([proId, serviceId])
+  @@index([proId])
+  @@index([serviceId])
+  @@map("pro_services")
+}
+
+model ProBankAccount {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId String @db.Uuid
+  pro   Pro    @relation(fields: [proId], references: [id], onDelete: Cascade)
+
+  accountHolderName   String
+  accountNumberMasked String
+  ifscCode            String
+  upiId               String?
+
+  isPrimary  Boolean @default(false)
+  isVerified Boolean @default(false)
+
+  @@index([proId])
+  @@map("pro_bank_accounts")
+}

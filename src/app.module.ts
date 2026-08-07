@@ -2,8 +2,12 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { CatalogModule } from './modules/catalog/catalog.module';
+import { CustomersModule } from './modules/customers/customers.module';
+import { IdentityModule } from './modules/identity/identity.module';
+import { ProsModule } from './modules/pros/pros.module';
 
 // NODE_ENV picks the override file; `.env` is always the fallback beneath it.
 // ConfigModule gives the FIRST file that defines a variable precedence, so the
@@ -17,8 +21,12 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
       cache: true,
       envFilePath: [`.env.${nodeEnv}`, '.env'],
     }),
-    DatabaseModule,
+    PrismaModule,
     HealthModule,
+    CatalogModule,
+    IdentityModule,
+    CustomersModule,
+    ProsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

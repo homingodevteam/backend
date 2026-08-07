@@ -1,0 +1,10 @@
+# npm regenerates this; a formatted lockfile conflicts with every open
+# branch at once.
+package-lock.json
+
+# generated Prisma Client
+/generated
+
+# build output
+/dist
+/coverage

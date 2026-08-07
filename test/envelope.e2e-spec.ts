@@ -149,7 +149,7 @@ describe('Response envelope + validation (e2e)', () => {
     expect(body.success).toBe(false);
     expect(body.message).toBe('Validation failed');
     expect(Array.isArray(body.errors)).toBe(true);
-    expect(body.errors.length).toBeGreaterThanOrEqual(2);
+    expect(body.errors?.length).toBeGreaterThanOrEqual(2);
   });
 
   it('rejects unknown properties instead of silently dropping them', async () => {
