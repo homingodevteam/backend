@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Customer, CustomerAddress } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditLogService } from '../identity/services/audit-log.service';
+import { TokenService } from '../identity/services/token.service';
 import { CreateAddressDto } from './dto/create-address.dto';
 import { UpdateAddressDto } from './dto/update-address.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
@@ -11,6 +12,7 @@ export class CustomersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly tokenService: TokenService,
   ) {}
 
   async getById(id: string): Promise<Customer> {
@@ -148,6 +150,7 @@ export class CustomersService {
       after: { ...updated },
       ipAddress,
     });
+    await this.tokenService.revokeAllSessions('customer', id);
 
     return updated;
   }

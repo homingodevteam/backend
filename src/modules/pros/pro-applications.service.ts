@@ -68,9 +68,17 @@ export class ProApplicationsService {
     return application;
   }
 
-  findAll(filters: { queueStatus?: string }): Promise<ProApplication[]> {
+  findAll(
+    filters: { queueStatus?: string },
+    allowedCityIds?: string[],
+  ): Promise<ProApplication[]> {
     return this.prisma.proApplication.findMany({
-      where: filters.queueStatus ? { queueStatus: filters.queueStatus } : {},
+      where: {
+        ...(filters.queueStatus ? { queueStatus: filters.queueStatus } : {}),
+        ...(allowedCityIds?.length
+          ? { pro: { cityId: { in: allowedCityIds } } }
+          : {}),
+      },
       orderBy: { submittedAt: 'asc' },
     });
   }
@@ -147,7 +155,11 @@ export class ProApplicationsService {
     return updated;
   }
 
-  async logCall(id: string, actingAdminId: string): Promise<ProApplication> {
+  async logCall(
+    id: string,
+    actingAdminId: string,
+    ipAddress: string | null,
+  ): Promise<ProApplication> {
     const application = await this.getOrThrow(id);
     const nextQueueStatus =
       application.queueStatus !== 'approved' &&
@@ -155,7 +167,7 @@ export class ProApplicationsService {
         ? 'call_pending'
         : application.queueStatus;
 
-    return this.prisma.proApplication.update({
+    const updated = await this.prisma.proApplication.update({
       where: { id },
       data: {
         verificationCallAt: new Date(),
@@ -163,6 +175,16 @@ export class ProApplicationsService {
         queueStatus: nextQueueStatus,
       },
     });
+    await this.auditLog.record({
+      adminUserId: actingAdminId,
+      action: 'pro.application.call.log',
+      entityType: 'ProApplication',
+      entityId: id,
+      before: { verificationCallAt: application.verificationCallAt },
+      after: { verificationCallAt: updated.verificationCallAt },
+      ipAddress,
+    });
+    return updated;
   }
 
   async decide(

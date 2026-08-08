@@ -9,6 +9,7 @@ import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { AuditLogService } from '../identity/services/audit-log.service';
+import { TokenService } from '../identity/services/token.service';
 import { AdminUpdateProProfileDto } from './dto/admin-update-pro-profile.dto';
 import { IngestLocationDto } from './dto/ingest-location.dto';
 import { UpdateProDto } from './dto/update-pro.dto';
@@ -21,6 +22,7 @@ export class ProsService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly auditLog: AuditLogService,
+    private readonly tokenService: TokenService,
   ) {}
 
   async getById(id: string): Promise<Pro> {
@@ -95,13 +97,20 @@ export class ProsService {
     });
   }
 
-  async findMany(filters: {
-    cityId?: string;
-    isAvailable?: boolean;
-    status?: string;
-  }): Promise<Pro[]> {
+  async findMany(
+    filters: {
+      cityId?: string;
+      isAvailable?: boolean;
+      status?: string;
+    },
+    allowedCityIds?: string[],
+  ): Promise<Pro[]> {
     const where: Prisma.ProWhereInput = {
-      ...(filters.cityId ? { cityId: filters.cityId } : {}),
+      ...(filters.cityId
+        ? { cityId: filters.cityId }
+        : allowedCityIds?.length
+          ? { cityId: { in: allowedCityIds } }
+          : {}),
       ...(filters.isAvailable !== undefined
         ? { isAvailable: filters.isAvailable }
         : {}),
@@ -179,6 +188,7 @@ export class ProsService {
       after: { status: updated.status },
       ipAddress,
     });
+    await this.tokenService.revokeAllSessions('pro', id);
 
     return updated;
   }

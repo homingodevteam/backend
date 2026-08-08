@@ -21,6 +21,8 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user.ty
 import type { Pro, ProApplication, ProService } from '../../prisma/client';
 import { PermissionCode } from '../identity/constants/permission-code';
 import { RequirePermissions } from '../identity/decorators/require-permissions.decorator';
+import { CityScopedResource } from '../identity/decorators/city-scoped-resource.decorator';
+import { CityScopeGuard } from '../identity/guards/city-scope.guard';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../identity/guards/permissions.guard';
 import { AdminUpdateProProfileDto } from './dto/admin-update-pro-profile.dto';
@@ -41,7 +43,7 @@ import { ProsService } from './pros.service';
 
 @ApiTags('Admin — Pros')
 @ApiBearerAuth('access-token')
-@UseGuards(JwtAuthGuard, PermissionsGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard, CityScopeGuard)
 @Controller('admin')
 export class AdminProsController {
   constructor(
@@ -60,11 +62,16 @@ export class AdminProsController {
   @ApiErrorEnvelope(HttpStatus.FORBIDDEN)
   listApplications(
     @Query('status') status?: string,
+    @CurrentUser() actor?: AuthenticatedUser,
   ): Promise<ProApplication[]> {
-    return this.applicationsService.findAll({ queueStatus: status });
+    return this.applicationsService.findAll(
+      { queueStatus: status },
+      actor?.cityScope,
+    );
   }
 
   @Patch('pro-applications/:id/verify-document')
+  @CityScopedResource('proApplication')
   @RequirePermissions(PermissionCode.PRO_APPLICATION_REVIEW)
   @ApiOperation({
     summary: 'Verify or reject one document (Aadhaar/PAN independently)',
@@ -90,6 +97,7 @@ export class AdminProsController {
   }
 
   @Get('pro-applications/:id/documents/:docType/view-url')
+  @CityScopedResource('proApplication')
   @RequirePermissions(PermissionCode.PRO_APPLICATION_REVIEW)
   @ApiOperation({
     summary: 'Get a short-lived presigned URL to view a KYC document',
@@ -115,6 +123,7 @@ export class AdminProsController {
   }
 
   @Patch('pro-applications/:id/log-call')
+  @CityScopedResource('proApplication')
   @RequirePermissions(PermissionCode.PRO_APPLICATION_REVIEW)
   @ApiOperation({ summary: 'Log a verification call against an application' })
   @ApiOkEnvelope(ProApplicationDto)
@@ -122,11 +131,13 @@ export class AdminProsController {
   logCall(
     @Param('id') id: string,
     @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: FastifyRequest,
   ): Promise<ProApplication> {
-    return this.applicationsService.logCall(id, actor.id);
+    return this.applicationsService.logCall(id, actor.id, request.ip ?? null);
   }
 
   @Patch('pro-applications/:id/decision')
+  @CityScopedResource('proApplication')
   @RequirePermissions(PermissionCode.PRO_APPLICATION_REVIEW)
   @ApiOperation({ summary: 'Approve or reject an application' })
   @ApiOkEnvelope(ProApplicationDto)
@@ -161,16 +172,21 @@ export class AdminProsController {
     @Query('cityId') cityId?: string,
     @Query('isAvailable') isAvailable?: string,
     @Query('status') status?: string,
+    @CurrentUser() actor?: AuthenticatedUser,
   ): Promise<Pro[]> {
-    return this.prosService.findMany({
-      cityId,
-      isAvailable:
-        isAvailable === undefined ? undefined : isAvailable === 'true',
-      status,
-    });
+    return this.prosService.findMany(
+      {
+        cityId,
+        isAvailable:
+          isAvailable === undefined ? undefined : isAvailable === 'true',
+        status,
+      },
+      actor?.cityScope,
+    );
   }
 
   @Patch('pros/:id/profile')
+  @CityScopedResource('pro')
   @RequirePermissions(PermissionCode.PRO_MODERATE)
   @ApiOperation({
     summary: "Set a Pro's city assignment and/or recorded monthly salary",
@@ -196,6 +212,7 @@ export class AdminProsController {
   }
 
   @Patch('pros/:id/suspend')
+  @CityScopedResource('pro')
   @RequirePermissions(PermissionCode.PRO_MODERATE)
   @ApiOperation({ summary: 'Suspend a Pro' })
   @ApiOkEnvelope(ProDto)
@@ -213,6 +230,7 @@ export class AdminProsController {
   }
 
   @Patch('pros/:id/reinstate')
+  @CityScopedResource('pro')
   @RequirePermissions(PermissionCode.PRO_MODERATE)
   @ApiOperation({ summary: 'Reinstate a suspended Pro' })
   @ApiOkEnvelope(ProDto)
@@ -230,6 +248,7 @@ export class AdminProsController {
   }
 
   @Patch('pros/:id/availability')
+  @CityScopedResource('pro')
   @RequirePermissions(PermissionCode.PRO_AVAILABILITY_SET)
   @ApiOperation({ summary: 'Toggle a single Pro on/off duty' })
   @ApiOkEnvelope(ProDto)
@@ -249,6 +268,7 @@ export class AdminProsController {
   }
 
   @Patch('pros/availability/bulk')
+  @CityScopedResource('bulkPros')
   @RequirePermissions(PermissionCode.PRO_AVAILABILITY_SET)
   @ApiOperation({ summary: 'Bulk toggle a set of Pros on/off duty' })
   @ApiOkEnvelope(ProDto, { isArray: true })
@@ -269,6 +289,7 @@ export class AdminProsController {
   // ----- Service assignment -----
 
   @Post('pros/:id/services')
+  @CityScopedResource('pro')
   @RequirePermissions(PermissionCode.PRO_MODERATE)
   @ApiOperation({ summary: 'Assign a Pro to a service' })
   @ApiOkEnvelope(ProServiceDto)
@@ -276,11 +297,19 @@ export class AdminProsController {
   assignService(
     @Param('id') proId: string,
     @Body() dto: AssignServiceDto,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: FastifyRequest,
   ): Promise<ProService> {
-    return this.serviceAssignmentsService.assign(proId, dto);
+    return this.serviceAssignmentsService.assign(
+      proId,
+      dto,
+      actor.id,
+      request.ip ?? null,
+    );
   }
 
   @Patch('pros/:id/services/:serviceId')
+  @CityScopedResource('pro')
   @RequirePermissions(PermissionCode.PRO_MODERATE)
   @ApiOperation({
     summary: 'Update a Pro-service assignment (e.g. suspend one service)',
@@ -291,7 +320,15 @@ export class AdminProsController {
     @Param('id') proId: string,
     @Param('serviceId') serviceId: string,
     @Body() dto: UpdateProServiceDto,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: FastifyRequest,
   ): Promise<ProService> {
-    return this.serviceAssignmentsService.update(proId, serviceId, dto);
+    return this.serviceAssignmentsService.update(
+      proId,
+      serviceId,
+      dto,
+      actor.id,
+      request.ip ?? null,
+    );
   }
 }

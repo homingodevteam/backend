@@ -10,6 +10,7 @@ import type { AuthenticatedUser } from '../../../common/types/authenticated-user
 import { PrismaService } from '../../../prisma/prisma.service';
 import { PermissionCode } from '../constants/permission-code';
 import { PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
+import { AuditLogService } from '../services/audit-log.service';
 
 /**
  * Must run after JwtAuthGuard (needs request.user). Only `admin` actors
@@ -21,6 +22,7 @@ export class PermissionsGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -36,24 +38,46 @@ export class PermissionsGuard implements CanActivate {
     const user = request.user;
 
     if (!user || user.actorType !== 'admin' || !user.roleId) {
-      throw new ForbiddenException('Admin permissions required');
+      return this.deny(request, required, 'Admin permissions required');
     }
 
     const role = await this.prisma.role.findUnique({
       where: { id: user.roleId },
     });
     if (!role) {
-      throw new ForbiddenException('Role no longer exists');
+      return this.deny(request, required, 'Role no longer exists');
     }
 
     const permissionCodes = role.permissionCodes as string[];
     const hasAll = required.every((code) => permissionCodes.includes(code));
     if (!hasAll) {
-      throw new ForbiddenException(
+      return this.deny(
+        request,
+        required,
         `Missing permission(s): ${required.join(', ')}`,
       );
     }
 
     return true;
+  }
+
+  private async deny(
+    request: FastifyRequest & { user: AuthenticatedUser },
+    required: PermissionCode[],
+    message: string,
+  ): Promise<never> {
+    if (request.user?.actorType === 'admin') {
+      await this.auditLog
+        .record({
+          adminUserId: request.user.id,
+          action: 'identity.permission.denied',
+          entityType: 'Route',
+          entityId: `${request.method} ${request.url}`,
+          after: { requiredPermissions: required, reason: message },
+          ipAddress: request.ip ?? null,
+        })
+        .catch(() => undefined);
+    }
+    throw new ForbiddenException(message);
   }
 }

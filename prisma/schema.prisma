@@ -134,6 +134,7 @@ model Customer {
 
   addresses CustomerAddress[]
 
+  @@index([status, createdAt])
   @@map("customers")
 }
 

@@ -2,7 +2,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayUnique,
   IsArray,
-  IsBoolean,
   IsIn,
   IsOptional,
   IsString,
@@ -10,11 +9,13 @@ import {
 import {
   ALL_PERMISSION_CODES,
   PermissionCode,
+  SYSTEM_ROLE_NAMES,
 } from '../constants/permission-code';
 
 export class CreateRoleDto {
   @ApiProperty({ example: 'ops' })
   @IsString()
+  @IsIn(SYSTEM_ROLE_NAMES)
   name: string;
 
   @ApiPropertyOptional()
@@ -27,9 +28,4 @@ export class CreateRoleDto {
   @ArrayUnique()
   @IsIn(ALL_PERMISSION_CODES, { each: true })
   permissionCodes: PermissionCode[];
-
-  @ApiPropertyOptional({ default: false })
-  @IsOptional()
-  @IsBoolean()
-  isSystemRole?: boolean;
 }

@@ -33,7 +33,13 @@ function buildDeps() {
 }
 
 function buildService(deps: ReturnType<typeof buildDeps>): CustomersService {
-  return new CustomersService(deps.prisma as never, deps.auditLog as never);
+  return new CustomersService(
+    deps.prisma as never,
+    deps.auditLog as never,
+    {
+      revokeAllSessions: jest.fn(),
+    } as never,
+  );
 }
 
 describe('CustomersService', () => {

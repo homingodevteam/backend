@@ -5,12 +5,14 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { CreateAdminUserDto } from '../dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from '../dto/update-admin-user.dto';
 import { AuditLogService } from './audit-log.service';
+import { TokenService } from './token.service';
 
 @Injectable()
 export class AdminUsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly tokenService: TokenService,
   ) {}
 
   findAll(): Promise<AdminUser[]> {
@@ -96,6 +98,10 @@ export class AdminUsersService {
       after: { ...updated },
       ipAddress,
     });
+
+    if (dto.isActive === false) {
+      await this.tokenService.revokeAllSessions('admin', id);
+    }
 
     return updated;
   }

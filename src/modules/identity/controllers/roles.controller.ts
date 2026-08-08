@@ -3,10 +3,16 @@ import {
   Controller,
   Get,
   HttpStatus,
+  Param,
+  Patch,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyRequest } from 'fastify';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../../common/types/authenticated-user.type';
 import {
   ApiErrorEnvelope,
   ApiOkEnvelope,
@@ -16,6 +22,7 @@ import { PermissionCode } from '../constants/permission-code';
 import { RequirePermissions } from '../decorators/require-permissions.decorator';
 import { CreateRoleDto } from '../dto/create-role.dto';
 import { RoleDto } from '../dto/role.dto';
+import { UpdateRoleDto } from '../dto/update-role.dto';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { PermissionsGuard } from '../guards/permissions.guard';
 import { RolesService } from '../services/roles.service';
@@ -41,7 +48,24 @@ export class RolesController {
   @ApiOperation({ summary: 'Create a role' })
   @ApiOkEnvelope(RoleDto)
   @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.CONFLICT)
-  create(@Body() dto: CreateRoleDto): Promise<Role> {
-    return this.rolesService.create(dto);
+  create(
+    @Body() dto: CreateRoleDto,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: FastifyRequest,
+  ): Promise<Role> {
+    return this.rolesService.create(dto, actor.id, request.ip ?? null);
+  }
+
+  @Patch(':id')
+  @RequirePermissions(PermissionCode.ROLE_MANAGE)
+  @ApiOperation({ summary: 'Update permissions for a fixed role' })
+  @ApiOkEnvelope(RoleDto)
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateRoleDto,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: FastifyRequest,
+  ): Promise<Role> {
+    return this.rolesService.update(id, dto, actor.id, request.ip ?? null);
   }
 }

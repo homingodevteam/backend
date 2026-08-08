@@ -17,3 +17,10 @@ export type PermissionCode =
 
 export const ALL_PERMISSION_CODES: PermissionCode[] =
   Object.values(PermissionCode);
+
+export const SYSTEM_ROLE_NAMES = [
+  'ops',
+  'support',
+  'finance',
+  'super_admin',
+] as const;

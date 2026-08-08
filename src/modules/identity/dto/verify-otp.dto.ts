@@ -12,7 +12,7 @@ export class VerifyOtpDto {
   phone: string;
 
   @ApiProperty({ example: '123456' })
-  @IsString()
+  @Matches(/^\d{6}$/, { message: 'code must be a 6-digit number' })
   code: string;
 
   @ApiProperty({ description: 'providerRef returned by /auth/otp/request' })

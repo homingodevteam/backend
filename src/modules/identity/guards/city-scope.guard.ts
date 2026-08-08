@@ -4,23 +4,21 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import type { AuthenticatedUser } from '../../../common/types/authenticated-user.type';
 import { PrismaService } from '../../../prisma/prisma.service';
+import {
+  CITY_RESOURCE_KEY,
+  type CityResource,
+} from '../decorators/city-scoped-resource.decorator';
 
-/**
- * Skeleton for now: no route in this pass has a meaningful cityId to check
- * (Booking/Dispatch resources don't exist yet), so this mostly no-ops. It
- * exists because Pro-approval and availability endpoints are documented as
- * city-scoped, and wiring the guard now means those routes only need a
- * decorator later, not a redesign.
- *
- * Looks for cityId on params, then query, then body; an empty
- * `AdminUser.cityScopeJson` means platform-wide access.
- */
 @Injectable()
 export class CityScopeGuard implements CanActivate {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly reflector: Reflector,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<
@@ -31,27 +29,64 @@ export class CityScopeGuard implements CanActivate {
         body: Record<string, unknown>;
       }
     >();
+    const scope = request.user?.cityScope ?? [];
+    if (request.user?.actorType !== 'admin' || scope.length === 0) return true;
 
-    const user = request.user;
-    if (!user || user.actorType !== 'admin') return true;
-
-    const cityId =
+    const explicitCity =
       request.params?.cityId ??
       request.query?.cityId ??
       (request.body?.cityId as string | undefined);
-    if (!cityId) return true;
+    if (explicitCity && !scope.includes(explicitCity)) this.outside();
 
-    const admin = await this.prisma.adminUser.findUnique({
-      where: { id: user.id },
-    });
-    if (!admin) throw new ForbiddenException('Admin account no longer exists');
-
-    const scope = (admin.cityScopeJson as string[]) ?? [];
-    if (scope.length === 0) return true; // platform-wide
-
-    if (!scope.includes(cityId)) {
-      throw new ForbiddenException('Outside your city scope');
+    const resource = this.reflector.getAllAndOverride<CityResource>(
+      CITY_RESOURCE_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (!resource) return true;
+    const ids = await this.resolveCities(resource, request);
+    if (ids.length === 0 || ids.some((cityId) => !scope.includes(cityId))) {
+      this.outside();
     }
     return true;
+  }
+
+  private async resolveCities(
+    resource: CityResource,
+    request: { params: Record<string, string>; body: Record<string, unknown> },
+  ): Promise<string[]> {
+    if (resource === 'pro') {
+      const row = await this.prisma.pro.findUnique({
+        where: { id: request.params.id },
+        select: { cityId: true },
+      });
+      return row?.cityId ? [row.cityId] : [];
+    }
+    if (resource === 'proApplication') {
+      const row = await this.prisma.proApplication.findUnique({
+        where: { id: request.params.id },
+        select: { pro: { select: { cityId: true } } },
+      });
+      return row?.pro.cityId ? [row.pro.cityId] : [];
+    }
+    if (resource === 'customer') {
+      const rows = await this.prisma.customerAddress.findMany({
+        where: { customerId: request.params.id },
+        select: { cityId: true },
+        distinct: ['cityId'],
+      });
+      return rows.map((row) => row.cityId);
+    }
+    const proIds = request.body.proIds as string[];
+    const rows = await this.prisma.pro.findMany({
+      where: { id: { in: proIds } },
+      select: { id: true, cityId: true },
+    });
+    if (rows.length !== proIds.length || rows.some((row) => !row.cityId))
+      return [];
+    return rows.map((row) => row.cityId!);
+  }
+
+  private outside(): never {
+    throw new ForbiddenException('Outside your city scope');
   }
 }

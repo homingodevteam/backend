@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
+import { PrismaService } from '../../../prisma/prisma.service';
 import { RedisService } from '../../../redis/redis.service';
 import type {
   ActorType,
@@ -17,6 +18,7 @@ interface AccessTokenPayload {
   sub: string;
   actorType: ActorType;
   roleId?: string;
+  accessMode?: 'full' | 'suspended_read_only';
   type: 'access';
 }
 
@@ -39,6 +41,7 @@ export class TokenService {
     private readonly jwtService: JwtService,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
   ) {}
 
   async issueTokenPair(user: AuthenticatedUser): Promise<TokenPair> {
@@ -47,6 +50,7 @@ export class TokenService {
         sub: user.id,
         actorType: user.actorType,
         roleId: user.roleId,
+        accessMode: user.accessMode ?? 'full',
         type: 'access',
       } satisfies AccessTokenPayload,
       {
@@ -94,6 +98,56 @@ export class TokenService {
       id: payload.sub,
       actorType: payload.actorType,
       roleId: payload.roleId,
+      accessMode: payload.accessMode ?? 'full',
+    };
+  }
+
+  /**
+   * Reloads mutable account state instead of trusting JWT claims. This makes
+   * blocks, suspensions, admin deactivation, role changes and city-scope
+   * changes effective on the next request.
+   */
+  async resolveCurrentIdentity(
+    user: Pick<AuthenticatedUser, 'id' | 'actorType'>,
+  ): Promise<AuthenticatedUser> {
+    if (user.actorType === 'customer') {
+      const customer = await this.prisma.customer.findUnique({
+        where: { id: user.id },
+        select: { id: true, isBlocked: true },
+      });
+      if (!customer || customer.isBlocked) {
+        throw new UnauthorizedException('This account has been blocked');
+      }
+      return { ...user, accessMode: 'full' };
+    }
+
+    if (user.actorType === 'pro') {
+      const pro = await this.prisma.pro.findUnique({
+        where: { id: user.id },
+        select: { id: true, status: true },
+      });
+      if (!pro || pro.status === 'rejected') {
+        throw new UnauthorizedException('This Pro account cannot sign in');
+      }
+      return {
+        ...user,
+        accessMode: pro.status === 'suspended' ? 'suspended_read_only' : 'full',
+      };
+    }
+
+    const admin = await this.prisma.adminUser.findUnique({
+      where: { id: user.id },
+      select: { id: true, roleId: true, cityScopeJson: true, isActive: true },
+    });
+    if (!admin || !admin.isActive) {
+      throw new UnauthorizedException('Admin account is deactivated');
+    }
+
+    return {
+      ...user,
+      roleId: admin.roleId,
+      cityScope: (admin.cityScopeJson as string[]) ?? [],
+      accessMode: 'full',
     };
   }
 
@@ -124,11 +178,19 @@ export class TokenService {
       throw new UnauthorizedException('Refresh token already used or revoked');
     }
 
+    let current: AuthenticatedUser;
+    try {
+      current = await this.resolveCurrentIdentity({
+        id: payload.sub,
+        actorType: payload.actorType,
+      });
+    } catch (error) {
+      await this.revokeAllSessions(payload.actorType, payload.sub);
+      throw error;
+    }
+
     await this.redis.del(key);
-    return this.issueTokenPair({
-      id: payload.sub,
-      actorType: payload.actorType,
-    });
+    return this.issueTokenPair(current);
   }
 
   async revokeSession(

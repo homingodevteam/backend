@@ -6,10 +6,9 @@ export interface OtpSendResult {
 }
 
 /**
- * Seam for the real third-party OTP provider (Synquic Slide / MSG91).
- * Neither is wired up yet — no API keys in .env.example — so only
- * MockOtpProvider implements this today. Swapping in the real one later is
- * a new class + a provider binding change in identity.module.ts.
+ * Seam for OTP delivery and verification.
+ * Production uses Synquic Slide; local/test environments may use
+ * MockOtpProvider.
  */
 export interface OtpProvider {
   sendOtp(phone: string): Promise<OtpSendResult>;

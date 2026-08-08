@@ -24,6 +24,7 @@ function buildService(deps: ReturnType<typeof buildDeps>): ProsService {
     deps.prisma as never,
     deps.redis as never,
     deps.auditLog as never,
+    { revokeAllSessions: jest.fn() } as never,
   );
 }
 
