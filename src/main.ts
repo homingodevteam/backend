@@ -26,7 +26,14 @@ async function bootstrap() {
   const globalPrefix = `${apiPrefix}/${apiVersion}`;
 
   app.setGlobalPrefix(globalPrefix);
-  app.enableCors({ origin: config.get<string>('CORS_ORIGIN', '*') });
+  // @fastify/cors defaults `methods` to 'GET,HEAD,POST' when unset — every
+  // PATCH/DELETE mutation (i.e. most admin actions) would fail CORS
+  // preflight from a browser otherwise. curl/Postman never hit this since
+  // they skip the preflight entirely, which is how it went unnoticed.
+  app.enableCors({
+    origin: config.get<string>('CORS_ORIGIN', '*'),
+    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'],
+  });
 
   app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
 

@@ -1,6 +1,9 @@
 import { config as loadEnv } from 'dotenv';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { getAuth } from 'firebase-admin/auth';
 import { PrismaClient } from '../src/prisma/client';
+import { buildFirebaseOptions } from '../src/config/firebase.config';
+import { initFirebaseAdmin } from '../src/firebase/init-firebase-admin';
 import { ALL_PERMISSION_CODES } from '../src/modules/identity/constants/permission-code';
 
 const nodeEnv = process.env.NODE_ENV ?? 'local';
@@ -13,8 +16,34 @@ const prisma = new PrismaClient({
 
 // Bootstrap only. All later admin accounts are provisioned by an admin API.
 const SEED_ADMIN_PHONE = '+916266941709';
+const SEED_ADMIN_EMAIL = 'superadmin@homingo.dev';
+// Dev-only fixed password — change it via the admin console once real
+// people are using this environment. Never used in production seeding.
+const SEED_ADMIN_PASSWORD = 'Homingo#SuperAdmin1';
+
+/** Idempotent: reuses the Firebase user if this seed already ran once. */
+async function ensureFirebaseUser(): Promise<string> {
+  const options = buildFirebaseOptions({
+    NODE_ENV: nodeEnv,
+    FIREBASE_SERVICE_ACCOUNT_PATH: process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
+  });
+  const auth = getAuth(initFirebaseAdmin(options.serviceAccountPath));
+
+  try {
+    const existing = await auth.getUserByEmail(SEED_ADMIN_EMAIL);
+    return existing.uid;
+  } catch {
+    const created = await auth.createUser({
+      email: SEED_ADMIN_EMAIL,
+      password: SEED_ADMIN_PASSWORD,
+      displayName: 'Super Admin',
+    });
+    return created.uid;
+  }
+}
 
 async function main(): Promise<void> {
+  const firebaseUid = await ensureFirebaseUser();
   const definitions = {
     ops: ['pro.application.review', 'pro.moderate', 'pro.availability.set'],
     support: ['customer.moderate'],
@@ -40,16 +69,20 @@ async function main(): Promise<void> {
 
   await prisma.adminUser.upsert({
     where: { phone: SEED_ADMIN_PHONE },
-    update: { roleId: superAdmin.id },
+    update: { roleId: superAdmin.id, email: SEED_ADMIN_EMAIL, firebaseUid },
     create: {
       phone: SEED_ADMIN_PHONE,
       fullName: 'Super Admin',
+      email: SEED_ADMIN_EMAIL,
+      firebaseUid,
       roleId: superAdmin.id,
       isActive: true,
     },
   });
 
-  console.log(`Seeded four system roles and admin user (${SEED_ADMIN_PHONE}).`);
+  console.log(
+    `Seeded four system roles and admin user (${SEED_ADMIN_PHONE}, ${SEED_ADMIN_EMAIL}).`,
+  );
 }
 
 main()

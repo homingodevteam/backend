@@ -13,6 +13,7 @@ import {
   ApiOkEnvelope,
 } from '../../../common/swagger/api-envelope.decorator';
 import type { AuthenticatedUser } from '../../../common/types/authenticated-user.type';
+import { FirebaseLoginDto } from '../dto/firebase-login.dto';
 import { GuestSessionDto } from '../dto/guest-session.dto';
 import { OtpRequestResponseDto } from '../dto/otp-request-response.dto';
 import { RefreshTokenDto } from '../dto/refresh-token.dto';
@@ -63,6 +64,17 @@ export class AuthController {
   )
   verifyOtp(@Body() dto: VerifyOtpDto): Promise<TokenPair> {
     return this.authService.verifyOtp(dto);
+  }
+
+  @Post('admin/firebase-login')
+  @ApiOperation({
+    summary:
+      'Log in as an admin via Firebase (password or Google sign-in on the client)',
+  })
+  @ApiOkEnvelope(TokenPairDto)
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED)
+  loginWithFirebase(@Body() dto: FirebaseLoginDto): Promise<TokenPair> {
+    return this.authService.loginWithFirebase(dto);
   }
 
   @Post('refresh')

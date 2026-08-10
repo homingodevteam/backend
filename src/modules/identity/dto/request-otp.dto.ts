@@ -4,7 +4,9 @@ import { IsIn, Matches } from 'class-validator';
 import type { ActorType } from '../../../common/types/authenticated-user.type';
 import { normalizePhone } from './phone.transform';
 
-const ACTOR_TYPES: ActorType[] = ['customer', 'pro', 'admin'];
+/** Admin login is Firebase-only (POST auth/admin/firebase-login) — OTP never applies to it. */
+type OtpActorType = Exclude<ActorType, 'admin'>;
+const ACTOR_TYPES: OtpActorType[] = ['customer', 'pro'];
 
 export class RequestOtpDto {
   @ApiProperty({
@@ -20,5 +22,5 @@ export class RequestOtpDto {
 
   @ApiProperty({ enum: ACTOR_TYPES })
   @IsIn(ACTOR_TYPES)
-  actorType: ActorType;
+  actorType: OtpActorType;
 }

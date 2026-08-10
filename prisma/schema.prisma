@@ -64,7 +64,13 @@ model AdminUser {
 
   phone    String  @unique
   fullName String
-  email    String?
+  email    String  @unique
+
+  /// Firebase Authentication uid. The only login path for admins (password
+  /// or Google, both via Firebase) — Firebase proves identity, this column
+  /// is what AuthService.loginWithFirebase() matches against to decide
+  /// authorization. No AdminUser row = no access, however Firebase verified them.
+  firebaseUid String @unique
 
   roleId String @db.Uuid
   role   Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)

@@ -6,6 +6,7 @@ import {
   IsString,
   IsUUID,
   Matches,
+  MinLength,
 } from 'class-validator';
 
 export class CreateAdminUserDto {
@@ -19,10 +20,19 @@ export class CreateAdminUserDto {
   @IsString()
   fullName: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
+  /** The new admin's login identity — also the Google-account match key. */
+  @ApiProperty()
   @IsEmail()
-  email?: string;
+  email: string;
+
+  /**
+   * Initial password, provisioned directly into Firebase Authentication.
+   * Never persisted on AdminUser — Firebase owns it from here on.
+   */
+  @ApiProperty({ minLength: 8 })
+  @IsString()
+  @MinLength(8)
+  password: string;
 
   @ApiProperty()
   @IsUUID()

@@ -1,6 +1,5 @@
 import {
   HttpException,
-  NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -53,8 +52,9 @@ function buildDeps() {
     callback(prisma),
   );
   const config = { get: jest.fn() };
+  const firebase = { verifyIdToken: jest.fn() };
 
-  return { otpProvider, tokenService, redis, prisma, config };
+  return { otpProvider, tokenService, redis, prisma, config, firebase };
 }
 
 function buildService(deps: ReturnType<typeof buildDeps>): AuthService {
@@ -64,6 +64,7 @@ function buildService(deps: ReturnType<typeof buildDeps>): AuthService {
     deps.redis as never,
     deps.prisma as never,
     deps.config as never,
+    deps.firebase as never,
   );
 }
 
@@ -77,17 +78,6 @@ describe('AuthService', () => {
       await expect(
         service.requestOtp({ phone: '+919876543210', actorType: 'customer' }),
       ).rejects.toThrow(HttpException);
-      expect(deps.otpProvider.sendOtp).not.toHaveBeenCalled();
-    });
-
-    it('never sends an OTP to an unregistered admin phone', async () => {
-      const deps = buildDeps();
-      deps.prisma.adminUser.findUnique.mockResolvedValue(null);
-      const service = buildService(deps);
-
-      await expect(
-        service.requestOtp({ phone: '+919876543210', actorType: 'admin' }),
-      ).rejects.toThrow(NotFoundException);
       expect(deps.otpProvider.sendOtp).not.toHaveBeenCalled();
     });
 
@@ -325,22 +315,60 @@ describe('AuthService', () => {
         accessMode: 'full',
       });
     });
+  });
 
-    it('never auto-creates an admin — 404 if the phone is unregistered', async () => {
+  describe('loginWithFirebase', () => {
+    it('rejects an identity Firebase verified but with no linked AdminUser', async () => {
       const deps = buildDeps();
-      deps.otpProvider.verifyOtp.mockResolvedValue(true);
+      deps.firebase.verifyIdToken.mockResolvedValue({ uid: 'fb-1' });
       deps.prisma.adminUser.findUnique.mockResolvedValue(null);
       const service = buildService(deps);
 
       await expect(
-        service.verifyOtp({
-          phone: '+919876543210',
-          code: '123456',
-          providerRef: 'ref-1',
-          actorType: 'admin',
-        }),
-      ).rejects.toThrow(NotFoundException);
-      expect(deps.prisma.adminUser.update).not.toHaveBeenCalled();
+        service.loginWithFirebase({ idToken: 'token' }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(deps.tokenService.issueTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('rejects a deactivated admin even with a valid identity', async () => {
+      const deps = buildDeps();
+      deps.firebase.verifyIdToken.mockResolvedValue({ uid: 'fb-1' });
+      deps.prisma.adminUser.findUnique.mockResolvedValue({
+        id: 'a-1',
+        roleId: 'r-1',
+        cityScopeJson: [],
+        isActive: false,
+      });
+      const service = buildService(deps);
+
+      await expect(
+        service.loginWithFirebase({ idToken: 'token' }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(deps.tokenService.issueTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('issues a token pair and stamps lastLoginAt for a matched, active admin', async () => {
+      const deps = buildDeps();
+      deps.firebase.verifyIdToken.mockResolvedValue({ uid: 'fb-1' });
+      deps.prisma.adminUser.findUnique.mockResolvedValue({
+        id: 'a-1',
+        roleId: 'r-1',
+        cityScopeJson: ['city-1'],
+        isActive: true,
+      });
+      const service = buildService(deps);
+
+      await service.loginWithFirebase({ idToken: 'token' });
+
+      expect(deps.prisma.adminUser.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'a-1' } }),
+      );
+      expect(deps.tokenService.issueTokenPair).toHaveBeenCalledWith({
+        id: 'a-1',
+        actorType: 'admin',
+        roleId: 'r-1',
+        cityScope: ['city-1'],
+      });
     });
   });
 });

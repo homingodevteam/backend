@@ -48,6 +48,9 @@ lerna-debug.log*
 .temp
 .tmp
 
+# Firebase service-account key — as sensitive as the DB password, never committed
+/secrets
+
 # Runtime data
 pids
 *.pid

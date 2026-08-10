@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
 import type { AdminUser } from '../../../prisma/client';
 import { apiError } from '../../../common/utils';
+import { FirebaseAdminService } from '../../../firebase/firebase-admin.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { CreateAdminUserDto } from '../dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from '../dto/update-admin-user.dto';
@@ -11,6 +12,7 @@ export class AdminUsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: TokenService,
+    private readonly firebase: FirebaseAdminService,
   ) {}
 
   findAll(): Promise<AdminUser[]> {
@@ -23,25 +25,47 @@ export class AdminUsersService {
     });
     if (!role) throw apiError('roleId does not exist', HttpStatus.BAD_REQUEST);
 
-    const existing = await this.prisma.adminUser.findUnique({
-      where: { phone: dto.phone },
-    });
-    if (existing) {
+    const [existingPhone, existingEmail] = await Promise.all([
+      this.prisma.adminUser.findUnique({ where: { phone: dto.phone } }),
+      this.prisma.adminUser.findUnique({ where: { email: dto.email } }),
+    ]);
+    if (existingPhone) {
       throw apiError(
         'An admin with this phone already exists',
         HttpStatus.CONFLICT,
       );
     }
+    if (existingEmail) {
+      throw apiError(
+        'An admin with this email already exists',
+        HttpStatus.CONFLICT,
+      );
+    }
 
-    return this.prisma.adminUser.create({
-      data: {
-        phone: dto.phone,
-        fullName: dto.fullName,
-        email: dto.email ?? null,
-        roleId: dto.roleId,
-        cityScopeJson: dto.cityScopeJson ?? [],
-      },
+    // Firebase is provisioned first since it isn't part of the Postgres
+    // transaction below — on a DB failure the created Firebase user is
+    // deleted so we never leak an identity with no matching AdminUser row.
+    const firebaseUser = await this.firebase.createUser({
+      email: dto.email,
+      password: dto.password,
+      displayName: dto.fullName,
     });
+
+    try {
+      return await this.prisma.adminUser.create({
+        data: {
+          phone: dto.phone,
+          fullName: dto.fullName,
+          email: dto.email,
+          firebaseUid: firebaseUser.uid,
+          roleId: dto.roleId,
+          cityScopeJson: dto.cityScopeJson ?? [],
+        },
+      });
+    } catch (error) {
+      await this.firebase.deleteUser(firebaseUser.uid);
+      throw error;
+    }
   }
 
   async update(id: string, dto: UpdateAdminUserDto): Promise<AdminUser> {
@@ -69,6 +93,12 @@ export class AdminUsersService {
 
     if (dto.isActive === false) {
       await this.tokenService.revokeAllSessions('admin', id);
+      // Closes the login path at the identity layer too, not just the
+      // session layer — a deactivated admin can't get a new Firebase ID
+      // token to trade in, not just "their existing sessions are dead."
+      await this.firebase.setDisabled(admin.firebaseUid, true);
+    } else if (dto.isActive === true) {
+      await this.firebase.setDisabled(admin.firebaseUid, false);
     }
 
     return updated;

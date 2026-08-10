@@ -3,13 +3,14 @@ import {
   HttpStatus,
   Inject,
   Injectable,
-  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AuthenticatedUser } from '../../../common/types/authenticated-user.type';
+import { FirebaseAdminService } from '../../../firebase/firebase-admin.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RedisService } from '../../../redis/redis.service';
+import { FirebaseLoginDto } from '../dto/firebase-login.dto';
 import { GuestSessionDto } from '../dto/guest-session.dto';
 import { RequestOtpDto } from '../dto/request-otp.dto';
 import { VerifyOtpDto } from '../dto/verify-otp.dto';
@@ -24,6 +25,7 @@ export class AuthService {
     private readonly redis: RedisService,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly firebase: FirebaseAdminService,
   ) {}
 
   async requestOtp(dto: RequestOtpDto): Promise<{ providerRef: string }> {
@@ -36,17 +38,6 @@ export class AuthService {
         'Too many OTP requests for this number - try again later',
         HttpStatus.TOO_MANY_REQUESTS,
       );
-    }
-
-    if (dto.actorType === 'admin') {
-      const admin = await this.prisma.adminUser.findUnique({
-        where: { phone: dto.phone },
-      });
-      if (!admin)
-        throw new NotFoundException('No admin account for this number');
-      if (!admin.isActive) {
-        throw new UnauthorizedException('Admin account is deactivated');
-      }
     }
 
     const result = await this.otpProvider.sendOtp(dto.phone);
@@ -130,10 +121,45 @@ export class AuthService {
     await this.tokenService.revokeAllSessions(user.actorType, user.id);
   }
 
+  /**
+   * The only admin login path. Firebase proves identity (password or
+   * Google, both produce the same firebaseUid for a given person once
+   * linked by email — Firebase's documented default). AdminUser is what
+   * decides authorization: no matching row = no access, however Firebase
+   * verified them. Mirrors the "never self-registered" rule from
+   * docs/user-stories-by-persona/admin.md.
+   */
+  async loginWithFirebase(dto: FirebaseLoginDto): Promise<TokenPair> {
+    const decoded = await this.firebase.verifyIdToken(dto.idToken);
+
+    const admin = await this.prisma.adminUser.findUnique({
+      where: { firebaseUid: decoded.uid },
+    });
+    if (!admin) {
+      throw new UnauthorizedException(
+        'No admin account is linked to this identity',
+      );
+    }
+    if (!admin.isActive) {
+      throw new UnauthorizedException('Admin account is deactivated');
+    }
+
+    await this.prisma.adminUser.update({
+      where: { id: admin.id },
+      data: { lastLoginAt: new Date() },
+    });
+
+    return this.tokenService.issueTokenPair({
+      id: admin.id,
+      actorType: 'admin',
+      roleId: admin.roleId,
+      cityScope: (admin.cityScopeJson as string[]) ?? [],
+    });
+  }
+
   private async resolveActor(dto: VerifyOtpDto): Promise<AuthenticatedUser> {
     if (dto.actorType === 'customer') return this.resolveCustomer(dto);
-    if (dto.actorType === 'pro') return this.resolvePro(dto.phone);
-    return this.resolveAdmin(dto.phone);
+    return this.resolvePro(dto.phone);
   }
 
   private async resolveCustomer(dto: VerifyOtpDto): Promise<AuthenticatedUser> {
@@ -177,24 +203,6 @@ export class AuthService {
       id: pro.id,
       actorType: 'pro',
       accessMode: pro.status === 'suspended' ? 'suspended_read_only' : 'full',
-    };
-  }
-
-  private async resolveAdmin(phone: string): Promise<AuthenticatedUser> {
-    const admin = await this.prisma.adminUser.findUnique({ where: { phone } });
-    if (!admin) throw new NotFoundException('No admin account for this number');
-    if (!admin.isActive) {
-      throw new UnauthorizedException('Admin account is deactivated');
-    }
-    await this.prisma.adminUser.update({
-      where: { id: admin.id },
-      data: { lastLoginAt: new Date() },
-    });
-    return {
-      id: admin.id,
-      actorType: 'admin',
-      roleId: admin.roleId,
-      cityScope: (admin.cityScopeJson as string[]) ?? [],
     };
   }
 

@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { SlideClient } from '@synquic/slide';
 import { buildSlideOptions } from '../../config/slide.config';
+import { FirebaseModule } from '../../firebase/firebase.module';
 import { RedisModule } from '../../redis/redis.module';
 import { AdminUsersController } from './controllers/admin-users.controller';
 import { AuthController } from './controllers/auth.controller';
@@ -35,6 +36,7 @@ import { TokenService } from './services/token.service';
 @Module({
   imports: [
     RedisModule,
+    FirebaseModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
