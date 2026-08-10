@@ -32,6 +32,18 @@ export class ProsService {
     return pro;
   }
 
+  /**
+   * How many approved Pros are on the books in a city.
+   *
+   * Exists for the Catalog module's city-activation gate (US-3.9): launching a
+   * city with no supply produces bookings nobody can serve. Counts `approved`
+   * only — not `isAvailable`, which is a daily on/off-duty flag and would make
+   * the answer depend on the hour ops happened to press the button.
+   */
+  countApprovedInCity(cityId: string): Promise<number> {
+    return this.prisma.pro.count({ where: { cityId, status: 'approved' } });
+  }
+
   async update(id: string, dto: UpdateProDto): Promise<Pro> {
     await this.getById(id);
     return this.prisma.pro.update({ where: { id }, data: dto });

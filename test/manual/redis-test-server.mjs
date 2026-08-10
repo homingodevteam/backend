@@ -3,6 +3,10 @@ import net from 'node:net';
 const port = Number(process.env.TEST_REDIS_PORT ?? 56379);
 const values = new Map();
 const expires = new Map();
+/** GEO members, keyed `${key}:${member}` → { longitude, latitude }. */
+const geo = new Map();
+/** List values, keyed by list name — backs the dispatch queue. */
+const lists = new Map();
 
 function live(key) {
   const until = expires.get(key);
@@ -94,8 +98,48 @@ function execute(args) {
     );
     return `*2\r\n${bulk('0')}${array(keys)}`;
   }
-  if (command === 'geoadd') return ':1\r\n';
-  if (command === 'zrem') return ':1\r\n';
+  // RPUSH / LPOP / LLEN — the dispatch intake queue (module 5, feature 1).
+  if (command === 'rpush') {
+    const [, key, ...items] = args;
+    const list = lists.get(key) ?? [];
+    list.push(...items);
+    lists.set(key, list);
+    return `:${list.length}\r\n`;
+  }
+  if (command === 'lpop') {
+    const [, key] = args;
+    const list = lists.get(key) ?? [];
+    const value = list.shift();
+    lists.set(key, list);
+    return value === undefined ? '$-1\r\n' : bulk(value);
+  }
+  if (command === 'llen') {
+    const [, key] = args;
+    return `:${(lists.get(key) ?? []).length}\r\n`;
+  }
+  // GEOADD key lng lat member — stored for real, because GEOPOS has to read
+  // it back: the booking tracking view is the first caller that does.
+  if (command === 'geoadd') {
+    const [, key, longitude, latitude, member] = args;
+    geo.set(`${key}:${member}`, { longitude, latitude });
+    return ':1\r\n';
+  }
+  // GEOPOS key member [member ...] — an array of [lng, lat] pairs, with a
+  // null entry for any member that has never reported.
+  if (command === 'geopos') {
+    const [, key, ...members] = args;
+    const entries = members.map((member) => {
+      const position = geo.get(`${key}:${member}`);
+      if (!position) return '*-1\r\n';
+      return `*2\r\n${bulk(position.longitude)}${bulk(position.latitude)}`;
+    });
+    return `*${entries.length}\r\n${entries.join('')}`;
+  }
+  if (command === 'zrem') {
+    const [, key, member] = args;
+    geo.delete(`${key}:${member}`);
+    return ':1\r\n';
+  }
   return '-ERR unsupported test command\r\n';
 }
 

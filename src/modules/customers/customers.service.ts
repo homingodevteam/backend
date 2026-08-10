@@ -190,6 +190,22 @@ export class CustomersService {
     return { serviceable: !!city?.isActive };
   }
 
+  /**
+   * Resolve one of this customer's own addresses, 404ing if it belongs to
+   * anyone else.
+   *
+   * Exported for the Booking module: a booking is placed against an address,
+   * and module 4 must not read `customer_addresses` directly. Ownership
+   * non-disclosure is preserved — someone else's address id is indistinguishable
+   * from one that does not exist.
+   */
+  getAddressForCustomer(
+    customerId: string,
+    addressId: string,
+  ): Promise<CustomerAddress> {
+    return this.getOwnedAddress(customerId, addressId);
+  }
+
   async block(id: string): Promise<Customer> {
     await this.getById(id);
     const updated = await this.prisma.customer.update({

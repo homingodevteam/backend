@@ -1,15 +1,17 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsUUID } from 'class-validator';
 import type { Proficiency } from '../pros.types';
 
 const PROFICIENCIES: Proficiency[] = ['trainee', 'skilled', 'expert'];
 
 export class AssignServiceDto {
   @ApiProperty({
+    format: 'uuid',
     description:
-      'No FK check yet — Service catalog (module 3) does not exist in this pass',
+      'Must resolve to a service in the catalogue. A draft service is ' +
+      'accepted — Pros are trained ahead of a launch.',
   })
-  @IsString()
+  @IsUUID()
   serviceId: string;
 
   @ApiPropertyOptional({ enum: PROFICIENCIES, default: 'trainee' })

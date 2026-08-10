@@ -1,153 +1,544 @@
-# Module Status Report — Identity & Access, Customer Profile, Pro Management
+# Module Status Report
 
-**Date:** 2026-08-07
-**Scope:** Modules 1, 2, 6 per `Modules_and_Features 1.md`, audited feature-by-feature, gaps closed where they didn't depend on an unbuilt module, then verified with unit tests, e2e tests, and a live boot against the real RDS instance.
+**Date:** 2026-08-10
+**Branch:** `homingo-backend-m1`
+**Scope:** every module in [`Modules_and_Features 1.md`](Modules_and_Features%201.md), with modules 1, 2, 3, 4 and 6 audited feature-by-feature, gaps closed where they didn't depend on an unbuilt module, and verified by unit tests, e2e tests, a live boot and a full cURL pass.
 
----
+**Companion documents:**
 
-## 1. Identity & Access — 10/10 features built
+- [`CONFLICTS_AND_DECISIONS.md`](CONFLICTS_AND_DECISIONS.md) — every contradiction between the source documents and how it was settled. Read it before disputing anything below.
+- [`ERD_DATA_MODEL_V10.md`](ERD_DATA_MODEL_V10.md) — reference copy of the authoritative Eraser diagram.
+- [`reports/FULL_API_CURL_REPORT_2026-08-10.md`](reports/FULL_API_CURL_REPORT_2026-08-10.md) — **116/116** across all six built modules, and the one defect it found.
 
-| #   | Feature                                                       | Status                                                                                           |
-| --- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| 1   | Phone + OTP login/signup, all three actor types               | ✅                                                                                               |
-| 2   | OTP dispatch/verify delegated to third party                  | ✅ (mock provider — swap-in seam for MSG91/Synquic Slide, no keys yet)                           |
-| 3   | Guest customer session from device id                         | ✅                                                                                               |
-| 4   | Guest → verified upgrade, same customer id preserved          | ✅                                                                                               |
-| 5   | Session issue/refresh/revoke, multi-device                    | ✅ (Redis-backed)                                                                                |
-| 6   | Admin role assignment; permission codes as json array on Role | ✅                                                                                               |
-| 7   | Permission-check middleware on every admin mutation           | ✅ (`PermissionsGuard`)                                                                          |
-| 8   | City-scoped admin access                                      | ✅ (`CityScopeGuard` — functional skeleton; nothing city-scoped exists yet to fully exercise it) |
-| 9   | Account block/unblock (customer), suspend/reinstate (Pro)     | ✅                                                                                               |
-| 10  | Rate limiting on OTP requests per phone                       | ✅                                                                                               |
-
-No gaps found. Nothing in this module depends on a module that isn't built yet.
+**Supersedes** the 2026-08-07 edition. The 2026-08-08 verification pass and the 2026-08-10 module 3 and 4 builds are folded in.
 
 ---
 
-## 2. Customer Profile — 8/9 features built as specified by the ERD
+## Status at a glance
 
-| #   | Feature                                               | Status                                                                                                                                         |
-| --- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Profile view/edit — name, optional email              | ✅                                                                                                                                             |
-| 2   | Multiple saved addresses, labelled home/office/other  | ✅                                                                                                                                             |
-| 3   | Exact coordinate pinning, stored separately from text | ✅                                                                                                                                             |
-| 4   | Landmark and free-text delivery notes per address     | ⚠️ See "ERD cross-check" below — `landmark` exists; a separate `deliveryNotes` column does not, because the authoritative ERD doesn't have one |
-| 5   | Default address selection                             | ✅                                                                                                                                             |
-| 6   | City resolution from the pinned coordinate            | ⏸ Deferred — needs Geo & Routing (module 13, not built): reverse geocoding via OpenStreetMap. Client currently supplies `cityId` directly.     |
-| 7   | Serviceability check before booking                   | ✅ (MVP version: is the city active — real geo/pincode logic is module 13's job)                                                               |
-| 8   | Razorpay customer object creation on first payment    | ⏸ Deferred — needs Payments (module 7, not built)                                                                                              |
-| 9   | Address edit-history guard (in-flight booking)        | ⏸ Deferred — needs Booking (module 4, not built). A `TODO` comment marks exactly where to wire it in `customers.service.ts`.                   |
+| #   | Module                    | Owns                                            | Status                                                               |
+| --- | ------------------------- | ----------------------------------------------- | -------------------------------------------------------------------- |
+| 1   | Identity & Access         | Role, AdminUser                                 | ✅ **Built** — 10/10 features                                        |
+| 2   | Customer Profile          | Customer, CustomerAddress                       | ✅ **Built** — 8/9 features; 1 out of scope per ERD                  |
+| 3   | Service Catalog           | ServiceCategory, Service, City                  | ✅ **Built** — 7/8 features; 1 half-cancelled by a ground rule       |
+| 4   | Booking & Job Lifecycle   | Booking, RecurringPlan, BookingStatusEvent, …   | ✅ **Built** — 19/22 features; 3 blocked on modules 5/10/13          |
+| 5   | Dispatch Engine           | AssignmentCandidate                             | ⬜ Not started (source model stubbed)                                |
+| 6   | Pro Management            | Pro, ProApplication, ProService, ProBankAccount | ✅ **Built** — 19/19 features                                        |
+| 7   | Payments                  | Order                                           | ⬜ Not started                                                       |
+| 8   | Commission & Payouts      | BookingCommission, CommissionPayout, …          | ⬜ Not started (source models stubbed)                               |
+| 9   | Ledger & Reconciliation   | LedgerEntry, …                                  | ⬜ Not started                                                       |
+| 10  | Training & Reviews        | TrainingModule, Review, …                       | ⬜ Not started (Review stubbed)                                      |
+| 11  | Safety & Support          | SosAlert, SupportTicket, TicketMessage          | ⬜ Not started                                                       |
+| 12  | Notifications             | NotificationLog                                 | ⬜ Not started                                                       |
+| 13  | Geo & Routing             | _(none — Redis only)_                           | 🟡 **Partial** — reverse geocode + city resolution built inside M2   |
+| 14  | Config & Server-Driven UI | PlatformSetting, UiConfig                       | 🟡 **Partial** — `PlatformSetting` model exists; no API, no UiConfig |
+| 15  | Admin Console & Reporting | AdminJob _(audit storage deferred)_             | ⬜ Not started; `AdminAuditLog` explicitly deferred                  |
+
+"Stubbed" means the model exists in `prisma/schema.prisma` because a built module needed it as a foreign key or counter source — not that the module is partly built.
 
 ---
 
-## 3. Pro Management — 19/19 features now built, 3 gaps closed this pass
+## 1 · Identity & Access — 10/10 built
+
+| #   | Feature                                                       | Status                                                                                                                                  |
+| --- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Phone + OTP login/signup, all three actor types               | ✅ No admin self-registration — admins are pre-provisioned                                                                              |
+| 2   | OTP dispatch/verify delegated to third party                  | ✅ **Real Synquic Slide provider implemented** (`slide-otp-provider.service.ts`); falls back to the mock until an API key is configured |
+| 3   | Guest customer session from device id                         | ✅                                                                                                                                      |
+| 4   | Guest → verified upgrade, same customer id preserved          | ✅ Including merge into an existing verified customer, preserving the guest address                                                     |
+| 5   | Session issue/refresh/revoke, multi-device                    | ✅ Redis-backed; refresh rotation, replay rejection, logout-all                                                                         |
+| 6   | Admin role assignment; permission codes as json array on Role | ✅ Four fixed system roles                                                                                                              |
+| 7   | Permission-check middleware on every admin mutation           | ✅ `PermissionsGuard`; revocation takes effect immediately                                                                              |
+| 8   | City-scoped admin access                                      | ✅ `CityScopeGuard` — now genuinely exercised (scoped lists, writes, atomic bulk-op denial)                                             |
+| 9   | Account block/unblock (customer), suspend/reinstate (Pro)     | ✅ Enforced on existing **and** newly issued sessions                                                                                   |
+| 10  | Rate limiting on OTP requests per phone                       | ✅ Plus wrong-code lockout and distinct wrong-reference/wrong-code errors                                                               |
+
+**Closed since 2026-08-07:** Indian national mobile canonicalisation to E.164 before OTP/Redis/persistence (`dto/phone.transform.ts`); rejected-Pro reapplication access; logout-all now provably covered.
+
+---
+
+## 2 · Customer Profile — 8/9 built, 1 out of scope
+
+| #   | Feature                                               | Status                                                                                                                                                                        |
+| --- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Profile view/edit — name, optional email              | ✅ Email is not an authentication credential                                                                                                                                  |
+| 2   | Multiple saved addresses, labelled home/office/other  | ✅ Create/list/edit/delete with ownership non-disclosure                                                                                                                      |
+| 3   | Exact coordinate pinning, stored separately from text | ✅ Authoritative coordinates + GeoJSON generation                                                                                                                             |
+| 4   | Landmark and free-text delivery notes per address     | ⛔ **Out of scope, not a gap** — the ERD's `CustomerAddress` has `landmark` only. See ERD cross-check                                                                         |
+| 5   | Default address selection                             | ✅ Exactly one default, transactional replacement, promotion after deletion                                                                                                   |
+| 6   | City resolution from the pinned coordinate            | ✅ **Built this pass** — `address-geocoder.service.ts` + `address-location.service.ts`, with cache, provider rate slot and resolution at save time. Was deferred on module 13 |
+| 7   | Serviceability check before booking                   | ✅ `GET /customers/serviceability`; city-level, per the "Geography: city-level only" ground rule                                                                              |
+| 8   | Razorpay customer object creation on first payment    | ⏸ Deferred — needs Payments (module 7)                                                                                                                                        |
+| 9   | Address edit-history guard (in-flight booking)        | ✅ **Built this pass** — live-booking pin-move/delete guard returns `409`; harmless text corrections still allowed                                                            |
+
+---
+
+## 3 · Service Catalog — 7/8 built, 1 half-cancelled by a ground rule
+
+Built 2026-08-10. `ServiceCategory` and `Service` now exist, field-for-field per ERD v10, and the module owns `City` alongside them.
+
+| #   | Feature                                                  | Status                                                                                                                                                            |
+| --- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Category tree with nesting, display order, icons         | ✅ `ServiceCategory` with `parentCategoryId`, `sortOrder`, `iconUrl`. **Two levels, enforced** — see [conflict #10](CONFLICTS_AND_DECISIONS.md)                   |
+| 2   | Service definitions: name, description, duration, price  | ✅ `durationMinutes` + `flatPrice` `Decimal(12,2)`, one flat national price                                                                                       |
+| 3   | Booking-type flags — instant, scheduled, recurring       | ✅ `supportsInstant` / `supportsScheduled` / `supportsRecurring`; an active service must keep at least one on                                                     |
+| 4   | Active/inactive at category and service level            | ✅ Both. Services are created as **drafts** and activation is gated (US-3.11)                                                                                     |
+| 5   | City registry with timezone; per-city activation         | ✅ Admin CRUD added — `POST/PATCH /admin/catalog/cities` + an activation route. Cities are created dark                                                           |
+| 6   | Browse and search endpoints                              | ✅ Tree, category drill-down, filter/search, and by-id resolution                                                                                                 |
+| 7   | Duration → Dispatch slot sizing **and Commission tiers** | ✅ / ⛔ — `getDurationMinutes()` is ready for module 5. The commission half is **cancelled** by the ground-rules table, [conflict #7](CONFLICTS_AND_DECISIONS.md) |
+| 8   | Catalog feeds the Server-Driven UI home config           | ⏸ Needs module 14 — `UiConfig` does not exist. Category `slug` is the intended join key and is immutable after creation                                           |
+
+**The two dangling foreign keys are closed.** `ProService.serviceId` and `Booking.serviceId` were bare `String` columns with no FK and no `@db.Uuid`, and nothing validated them — `ProServiceAssignmentsService.assign()` accepted any string, producing Pros competent at services that did not exist. Both are now `@db.Uuid` with `ON DELETE RESTRICT` foreign keys, and the assignment path resolves the id through the catalog first. This was the largest correctness gap in the shipped code.
+
+### API surface
+
+| Public (no auth — the catalogue is what a first-time user sees) |                                             |
+| --------------------------------------------------------------- | ------------------------------------------- |
+| `GET /cities`                                                   | Unchanged, still live                       |
+| `GET /catalog/categories`                                       | Active tree, two levels, with services      |
+| `GET /catalog/categories/:id/services`                          | Category drill-down                         |
+| `GET /catalog/services`                                         | Filter by `categoryId`, `q`, `bookingType`  |
+| `GET /catalog/services/:id`                                     | **Resolves inactive services too** — US-3.1 |
+
+| Admin                                                                                   | Permission               |
+| --------------------------------------------------------------------------------------- | ------------------------ |
+| `GET/POST /admin/catalog/categories`, `PATCH :id`, `PATCH :id/activation`, `DELETE :id` | `catalog.manage`         |
+| `GET/POST /admin/catalog/services`, `PATCH :id`, `PATCH :id/activation`                 | `catalog.manage`         |
+| `PATCH /admin/catalog/services/:id/commission`                                          | `catalog.commission.set` |
+| `GET/POST /admin/catalog/cities`, `PATCH :id`, `PATCH :id/activation`                   | `catalog.city.manage`    |
+
+Commission is a separate route behind a separate permission so repricing and changing what a Pro earns stay distinct operations (US-3.10, US-8.4). Seeded: `ops` gets `catalog.manage` + `catalog.city.manage`; `finance` gets `catalog.commission.set`.
+
+**Not city-scoped, deliberately.** The catalogue is national by ground rule, so `CityScopeGuard` has nothing to scope on — an Indore ops user editing a price does affect Mumbai. That follows from the pricing model ([conflict #8](CONFLICTS_AND_DECISIONS.md)), and is a product risk worth knowing rather than a bug.
+
+### Rules enforced, each with a test
+
+| Rule                                                                   | Story          |
+| ---------------------------------------------------------------------- | -------------- |
+| Cannot activate a service with no commission rate → `409`              | US-3.11        |
+| `percent` rate capped at 100; `flat` may exceed it (rupees)            | US-3.10        |
+| Cannot activate a service under an inactive category → `409`           | US-3.8         |
+| Deactivation is unconditional and never cancels sold work              | US-3.7         |
+| Cannot delete a category holding children or services → `409`          | US-3.8         |
+| Category depth bounded at two levels; no self-parent, no cycles        | —              |
+| An active service must keep ≥1 booking type                            | F#3            |
+| Price/duration edits touch nothing else — no commission, no `isActive` | US-3.5, US-3.6 |
+| Category `slug` unique and immutable after creation                    | —              |
+
+The database carries the same guarantees independently: `CHECK` constraints for the commission range, the active-requires-commission rule and the active-requires-booking-type rule, plus `ON DELETE RESTRICT` behind the orphaning rules.
+
+### User-story audit
+
+Every US-3.x story in [`user-stories-by-persona/`](user-stories-by-persona/), checked against the shipped code rather than against the feature list.
+
+| Story                                                  | Persona | Status                                                                                                                                                                                                                |
+| ------------------------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **US-3.1** Browse categories and services              | C       | ✅ Tree, drill-down and search. Edge — inactive services vanish from browse but stay resolvable by id — implemented and tested                                                                                        |
+| **US-3.2** See one flat price                          | C       | ✅ for the catalog's part: `flatPrice` on browse, and the platform/Pro split is absent from `ServiceDto` (asserted in the Swagger test). The "same number on booking summary, invoice and history" half is module 4's |
+| **US-3.3** Home screen without an app update           | C/A     | ⏸ Module 14. `UiConfig` does not exist; category `slug` is the intended join key and is immutable                                                                                                                     |
+| **US-3.4** Create a service                            | A       | ✅ **with a deviation** — commission is a second call, see [conflict #17](CONFLICTS_AND_DECISIONS.md). Edge (one flat national price) holds                                                                           |
+| **US-3.5** Change a service price                      | A       | 🟡 Price edit works and provably touches nothing else. **"Audited" is not satisfied** — no attribution exists ([#9](CONFLICTS_AND_DECISIONS.md), [#14](CONFLICTS_AND_DECISIONS.md))                                   |
+| **US-3.6** Change a service duration                   | A       | ✅ Edit works; nothing cascades. "Does not resize bookings already placed" is guaranteed by module 4 snapshotting, which is not built                                                                                 |
+| **US-3.7** Deactivate a service with live bookings     | A       | ✅ Deactivation is unconditional and cascades nowhere, tested. Fully demonstrable only once bookings exist                                                                                                            |
+| **US-3.8** Restructure the category tree               | A       | ✅ Reparent, activate, delete. Orphaning blocked twice over — a `409` with a readable message, and `ON DELETE RESTRICT` beneath it                                                                                    |
+| **US-3.9** Activate a new city                         | A       | ✅ **Gap found in this audit and closed** — see below                                                                                                                                                                 |
+| **US-3.10** Set a commission rate                      | A/P     | ✅ Own endpoint, own permission, range-validated. "Future completions only" is inherent: nothing rewrites history                                                                                                     |
+| **US-3.11** Activate a service with no commission rate | A/S     | ✅ Blocked in the service layer **and** by a `CHECK` constraint                                                                                                                                                       |
+| **US-8.4** Reprice without touching commission         | A/P     | ✅ Separate routes; a test asserts a price update never writes the commission columns. The "ops must see which mode" half is a UI requirement                                                                         |
+| **US-8.8** Discover a service with no commission rate  | S/A     | ✅ Made unreachable by US-3.11's two layers, which is what the story asks for                                                                                                                                         |
+
+**US-3.9's edge case was missing.** The story reads: _"Activating a city with no approved Pros in it produces bookings nobody can serve. **Gate on supply.**"_ Nothing checked. Launching a city now returns `409 CITY_HAS_NO_SUPPLY` when no approved Pro is based there, overridable with `acknowledgeNoSupply: true` — a gate, not a prohibition, since opening a city ahead of the first approved cohort is legitimate. Pausing a city is never gated.
+
+That check needs Pro counts inside a Catalog operation, while Pro Management needs the catalogue to validate service assignments — a genuinely bidirectional dependency, wired with `forwardRef` on both sides. [`test/module-graph.e2e-spec.ts`](../test/module-graph.e2e-spec.ts) compiles the real `AppModule` and asserts both injections resolve, because a `forwardRef` mistake is invisible to unit tests and surfaces only at boot.
+
+### Known gaps in this module
+
+- **No audit of catalog edits at all.** Not even "who last touched this row" — ERD v10 gives the catalog tables no editor column, and `AdminAuditLog` is deferred. See [conflicts #9 and #14](CONFLICTS_AND_DECISIONS.md). This is the sharpest open gap here.
+- **No per-service cash flag.** The Cash ground rule names `Service.allowsCash`; the ERD has no such column, so it was not added ([conflict #13](CONFLICTS_AND_DECISIONS.md)).
+- **Search is a sequential scan**, deliberately — a few hundred national rows do not justify `pg_trgm`, which needs a `CREATE EXTENSION` privilege the RDS app role may not have.
+
+📋 [`MODULE_3_SERVICE_CATALOG_PLAN.md`](MODULE_3_SERVICE_CATALOG_PLAN.md) is the plan this was built from. **Its §3 schema is superseded** by the ERD reconciliation — see [conflict #15](CONFLICTS_AND_DECISIONS.md) for the seven field names that changed.
+
+---
+
+## 4 · Booking & Job Lifecycle — 19/22 built
+
+Built 2026-08-10. The largest module in the system: 5 tables, 29 endpoints, and the state machine every other module reads from.
+
+**A cash job runs end to end today** — create → assign → en route → arrived → start OTP → completed → invoice. Online bookings stop at `awaiting_payment` behind a port, because Payments (module 7) does not exist. That line comes from the Cash ground rule, not from cutting scope: a cash booking has no `Order` row and skips `awaiting_payment` by design.
+
+_Creation (6/7)_
+
+| #   | Feature                                   | Status                                                                                                                         |
+| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Instant booking, dispatch immediately     | ✅ Created and handed to the dispatch port. **Assignment itself is manual** until module 5 — `POST /admin/bookings/:id/assign` |
+| 2   | Scheduled booking from real availability  | 🟡 Slots are accepted, validated as future-dated and stored; they are **not** checked against real Pro availability            |
+| 3   | Recurring plans, auto-generating bookings | ✅ daily/weekly/biweekly/monthly, with a generator that is deliberately tolerant of one plan failing                           |
+| 4   | Slot availability query                   | ⏸ Module 5 — `DispatchPort.getAvailableSlots()` returns `[]` rather than inventing slots nobody can work                       |
+| 5   | Flat price quoted and frozen              | ✅ Read from the catalogue at creation, never recomputed. Closes [conflict #11](CONFLICTS_AND_DECISIONS.md)                    |
+| 6   | One-tap rebook                            | ✅ Copies service and address, records lineage, **never pins the Pro** — rotation wins                                         |
+| 7   | Human-readable booking number             | ✅ `HB-2026-000123` from a Postgres sequence, mirroring `employeeCode`                                                         |
+| —   | _(US-4.6)_ Abandoned checkouts expire     | ✅ `POST /admin/bookings/expire-unpaid` sweeps `awaiting_payment` past the hold window. Window A, so nothing is refunded       |
+
+_Lifecycle (3/3)_
+
+| #   | Feature                         | Status                                                                                                                         |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 8   | State machine with cancellation | ✅ As a transition table, not an ordered list — payment mode forks it ([#20](CONFLICTS_AND_DECISIONS.md)). All 81 pairs tested |
+| 9   | Append-only status event log    | ✅ Actor, timestamp **and coordinates**, written in the same transaction as the status change                                  |
+| 10  | Repeat transitions preserved    | ✅ `en_route ⇄ arrived` repeats freely; `arrivedAt` holds the authoritative first arrival                                      |
+
+_Service-start OTP (4/4)_
+
+| #   | Feature                              | Status                                                                                                          |
+| --- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| 11  | OTP issued on arrival                | ✅ Sent to the **customer's** phone, reusing module 1's `SlideOtpProvider` — no new integration                 |
+| 12  | Pro enters it; third-party verify    | ✅ Verification is the provider's answer, never the app's claim                                                 |
+| 13  | Only a verified OTP sets `startedAt` | ✅ Enforced in code **and** by a `CHECK` constraint. The one documented exception is an audited ops force-start |
+| 14  | Attempt counting + provider ref      | ✅ A wrong code counts an attempt and deliberately does **not** pause the grace clock                           |
+
+_Execution (3/5)_
+
+| #   | Feature                             | Status                                                                                                                                    |
+| --- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| 15  | Live tracking (position + ETA)      | 🟡 `GET /bookings/:id/tracking` reads the Pro GEO index, falls back to the cold flush, and reports `isStale`. **ETA is null** — module 13 |
+| 16  | In-app chat scoped to the booking   | ✅ No contact detail in any chat DTO, asserted in the Swagger test. Writes close 24h after completion; reads never                        |
+| 17  | Mandatory geo-stamped photo proof   | ✅ Completion is **refused** without at least one completion photo. Keys namespaced per booking                                           |
+| 18  | Actual duration from verified start | ✅ Computed and stored — **reporting only**. The "commission is calculated from" clause is [cancelled](CONFLICTS_AND_DECISIONS.md)        |
+| 19  | Route trail at completion           | ⏸ Module 13 — nothing accumulates a GPS trail today. Column exists, deliberately left null                                                |
+
+_Close-out (2/3)_
+
+| #   | Feature                        | Status                                                                                              |
+| --- | ------------------------------ | --------------------------------------------------------------------------------------------------- |
+| 20  | Cancellation with reason/actor | ✅ All six windows. Fee and refund resolved from the window; window E routes to a human             |
+| 21  | Invoice on the booking         | 🟡 Number, tax and `invoicedAt` generated at completion. **PDF deferred** — nothing renders one yet |
+| 22  | Booking history and live views | ✅ Customer history + live orders, Pro job list, and the one-call admin reconstruction              |
+
+### The state machine
+
+```
+                 ┌─ cash ──────────────────────────┐
+created ─────────┤                                 ├──> assigning ──> assigned
+                 └─ online ──> awaiting_payment ───┘                     │
+                                                                         v
+completed <── started <── arrived <──> en_route <────────────────────────┘
+```
+
+`cancelled` is reachable from every live state and from none of the terminal ones. `completed` is terminal — a finished job is disputed, never cancelled.
+
+### Rules enforced, each with a test
+
+| Rule                                                                        | Source           |
+| --------------------------------------------------------------------------- | ---------------- |
+| Price frozen at creation; never recomputed                                  | US-3.2, US-3.5   |
+| `paymentMode` frozen; cash and online take different paths out of `created` | Cash ground rule |
+| Only a provider-verified OTP or an audited ops force-start sets `startedAt` | US-4.12          |
+| A failed OTP counts an attempt and does not pause the grace clock           | US-4.13          |
+| Completion refused without a verified start                                 | F#13             |
+| Completion refused without ≥1 completion photo                              | US-4.16          |
+| A Pro has no cancellation route at any depth                                | Principle 2      |
+| Cancelling after `started` is ops-only                                      | US-4.21          |
+| No fee when the platform is the party that failed                           | US-4.22          |
+| Photo keys namespaced per booking; foreign keys rejected                    | —                |
+| Booking creation idempotent per `Idempotency-Key`                           | Cross-cutting    |
+| Chat writes close after completion; reads never                             | US-4.8           |
+
+The database carries its own guarantees independently: `CHECK` constraints bound every enum-ish column, and refuse a `started` booking with no `startedAt`, a `completed` one with no `completedAt`, or a `cancelled` one with no `cancelledAt`. `cancelledByType` is constrained to `customer | ops | system` — a Pro cannot be recorded as a canceller even by a future code path.
+
+### The two ports
+
+Module 4 owns interfaces for the two modules it needs that do not exist, so every code path around them is written and tested now:
+
+| Port           | For      | No-op behaviour                                                                        |
+| -------------- | -------- | -------------------------------------------------------------------------------------- |
+| `DispatchPort` | Module 5 | Leaves the booking in `assigning`; returns **no** slots rather than inventing them     |
+| `PaymentsPort` | Module 7 | `createOrder` fails loudly with `501`; a fake order id would strand a booking silently |
+
+Swapping in the real modules is two `provide` lines in `bookings.module.ts` and nothing else.
+
+### User-story audit
+
+All 24 US-4.x stories across the three personas, checked against the shipped code rather than the feature list.
+
+| Story                                           | Persona | Status                                                                                                                                                                               |
+| ----------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **US-4.1** Book an instant service              | C       | ✅ Edge honoured in reverse — a cash booking dispatches before money moves, so "charging then failing to assign" cannot happen. For online, nothing is charged until Payments exists |
+| **US-4.2** Pick a scheduled slot                | C       | 🟡 Slot accepted, future-dated and stored; **not validated against real availability**. Over-selling is unguarded — module 5                                                         |
+| **US-4.3** Recurring cleaning                   | C       | ✅ Including the edge that matters most: a failed occurrence **never deactivates the plan**, only the plan's own end date does                                                       |
+| **US-4.5** Rebook a past service                | C       | ✅ Lineage recorded, Pro never pinned ([#22](CONFLICTS_AND_DECISIONS.md))                                                                                                            |
+| **US-4.6** Abandon checkout                     | C/S     | ✅ **Gap found in this audit and closed** — the hold-window sweep had no caller. Pay-after-expiry is module 7's webhook                                                              |
+| **US-4.7** Watch the Pro approach               | C       | ✅ **Gap found in this audit and closed** — the endpoint was planned but never built. `isStale` implemented; ETA is module 13                                                        |
+| **US-4.8** Message the Pro                      | C/P     | ✅ No contact detail in the schema, asserted in the Swagger test. Chat closes ([#23](CONFLICTS_AND_DECISIONS.md))                                                                    |
+| **US-4.9** Mark en route                        | P       | ✅ Repeatable; every leg survives in the log                                                                                                                                         |
+| **US-4.10** Mark arrival                        | P       | ✅ `arrivedAt` is the authoritative first arrival; coordinates recorded wherever the Pro actually is                                                                                 |
+| **US-4.11** Receive the start OTP               | C       | ✅ Sent to the customer's phone, plus a self-service resend. The override is [#25](CONFLICTS_AND_DECISIONS.md)                                                                       |
+| **US-4.12** Enter the customer's OTP            | P       | ✅ The provider's answer, never the app's claim                                                                                                                                      |
+| **US-4.13** Mistype the OTP                     | P       | ✅ Attempt counted, `startedAt` stays null, **grace clock keeps running**, resend offered past the max                                                                               |
+| **US-4.14** Arrive but be unable to start       | P/A/S   | 🟡 Every input is recorded and the grace window is configured. **Nothing watches it** — the `no_start` ticket needs module 11                                                        |
+| **US-4.15** Not be home when they arrive        | C/P/A   | ✅ for module 4's part — arrival and failed start recorded, ops decides. Charging stays a policy call ([#24](CONFLICTS_AND_DECISIONS.md))                                            |
+| **US-4.16** Complete with photo proof           | P       | ✅ Completion refused without one                                                                                                                                                    |
+| **US-4.17** Work as long as the job takes       | P       | ✅ Duration recorded; commission unchanged ([#18](CONFLICTS_AND_DECISIONS.md))                                                                                                       |
+| **US-4.18** Rate the job                        | C       | ⏸ Module 10 owns `Review`                                                                                                                                                            |
+| **US-4.19** Cancel before anyone is assigned    | C       | ✅ Windows A/B, full refund                                                                                                                                                          |
+| **US-4.20** Cancel while the Pro is on the way  | C       | 🟡 Window D correct and the assignment is closed first — but **the Pro is not notified**, so they keep driving. Module 12                                                            |
+| **US-4.21** Stop work that's going wrong        | C/A     | ✅ Ops-only, discretionary refund, never a formula                                                                                                                                   |
+| **US-4.22** Cancelled because nobody could come | A/C/S   | ✅ Full refund, no fee — enforced in code, not configurable                                                                                                                          |
+| **US-4.23** Two services for the same morning   | C       | ✅ Two independent bookings, no interaction. Rotation across them is module 5's                                                                                                      |
+| **US-4.24** Reconstruct a disputed job          | A       | ✅ Timeline, photos and chat in **one** call, as the story demands                                                                                                                   |
+
+**Two gaps were found by this audit and closed.** `GET /bookings/:id/tracking` was in the plan's §4.1 and never built, and `cancelAsSystem` existed with no caller — the payment-hold setting was seeded but nothing read it. Both now ship with Swagger coverage.
+
+### Known gaps in this module
+
+- **No automatic assignment.** Ops assigns by hand. This is module 5's job and the route survives as the US-5.14 override once it exists.
+- **Scheduled slots are unvalidated.** A customer can pick a time nobody is free for; dispatch resolves supply afterwards, which is what US-4.2 describes, but there is no over-selling guard.
+- **No push notifications on any transition** (module 12), so a Pro is not yet told a job was cancelled under them — US-4.20's edge, and the one gap with a real-world cost today.
+- **No `no_start` ticket** (module 11). The grace window is configured but nothing watches it.
+- **No invoice PDF.**
+
+📋 Built from [`MODULE_4_BOOKING_LIFECYCLE_PLAN.md`](MODULE_4_BOOKING_LIFECYCLE_PLAN.md). Nine of its §2 items became [conflicts #18–#28](CONFLICTS_AND_DECISIONS.md).
+
+---
+
+## 5 · Dispatch Engine — 14/16 built
+
+Built 2026-08-10. **Bookings now assign themselves.** Module 4's `DispatchPort` was already defined and stubbed, so the integration was registering one adapter — module 4 is unchanged.
+
+| #   | Feature                                      | Status                                                                                                                                |
+| --- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Redis-queued intake, one job per booking     | ✅ A real Redis list. Drained by an admin route — there is still no job runner ([#30](CONFLICTS_AND_DECISIONS.md))                    |
+| 2   | Distributed lock per booking (`SET NX PX`)   | ✅ Released in a `finally`, so a thrown attempt cannot wedge a booking                                                                |
+| 3   | Rule 1 — availability                        | ✅ Active `ProService` + `approved` + `isAvailable` + a free window. All three gates admin-set                                        |
+| 4   | Free windows from committed bookings alone   | ✅ No roster involved; cached in Redis per Pro per day                                                                                |
+| 5   | Travel origin resolution                     | ✅ Next job's address → live GPS → home base, and **which one was used is recorded** so US-5.7 stays answerable                       |
+| 6   | Rule 2 — proximity                           | 🟡 Ranks correctly on straight-line time. Real road time is module 13 ([#29](CONFLICTS_AND_DECISIONS.md))                             |
+| 7   | Rule 3 — rotation                            | ✅ Indexed over `Booking(addressId, proId, completedAt)`, cooldown from `PlatformSetting`. A **penalty, not an exclusion**            |
+| 8   | Rule 4 — tie-break                           | ✅ Duration fit → smoothed rating → fewest offers today → lowest `Pro.id`. Deterministic to the last step                             |
+| 9   | Smoothed rating / cold start                 | ✅ `(ratingSum + priorMean × priorWeight) / (ratingCount + priorWeight)`. **`acceptanceRate` is not an input**, and a test asserts it |
+| 10  | Every candidate persisted with score inputs  | ✅ 11 new columns. Excluded Pros get a row with a null `rank`, so "never a candidate" ≠ "ranked and lost"                             |
+| 11  | Assignment written to booking; counters move | ✅ `assignmentsOffered` increments — **it never did before**, see below                                                               |
+| 12  | Acknowledgement window                       | ✅ Receipt, not agreement. Idempotent                                                                                                 |
+| 13  | No-ack retry with `already_tried` exclusion  | ✅ Their acceptance rate moves; their ranking does not                                                                                |
+| 14  | Ops manual override                          | ✅ Built in module 4 (`POST /admin/bookings/:id/assign`), reason mandatory                                                            |
+| 15  | ETA computation, published continuously      | ⏸ Modules 12 + 13. Straight-line time is good enough to rank, **not to quote**                                                        |
+| 16  | Unassignable bookings surfaced to ops        | ✅ `no_supply` and `exhausted` kept distinct ([#31](CONFLICTS_AND_DECISIONS.md))                                                      |
+
+### A fourth counter bug, and the pattern behind all of them
+
+Wiring a real caller to `ProCountersService` exposed a **third and fourth** instance of one pattern: three of its four methods were written before modules 4 and 5 existed, so each owned the _transition_ as well as the counter. Each broke silently as its real caller arrived — see [conflict #33](CONFLICTS_AND_DECISIONS.md) for the table.
+
+`recordOffer` used the winner's candidate row as its idempotency guard; the engine writes that row first (it holds the score inputs), so the counter always returned early and `assignmentsOffered` stayed at zero while `assignmentsAcknowledged` climbed. Live verification caught it: `offered=0 acked=1` is not a state that can occur. After the fix, `offered=1 acked=1 acceptanceRate=1.00`.
+
+**`recordReview` is the one method that has still never run.** Module 10 will be its first caller, and it carries the same shape of risk.
+
+### Live verification
+
+`test/manual/run-dispatch-curl.sh` — **19/19 against the local database**: booking queued, drained, assigned automatically, ack window opened, candidate scores persisted with the travel origin (`home_base`) and smoothed rating, acknowledged idempotently, and **no accept or decline route at any depth**.
+
+Rule 1 was also confirmed working the hard way: a run reported `exhausted` because the test Pro genuinely had two overlapping committed bookings, and another reported `no_supply` because the Pro held a different service than the one booked. Both were the engine being right about bad test data.
+
+---
+
+## 6 · Pro Management — 19/19 built
 
 _Onboarding (8/8)_
 
-| #   | Feature                                                      | Status                                                                                                                          |
-| --- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | In-app self-application, referral attribution                | ✅                                                                                                                              |
-| 2   | Aadhaar/PAN manual document capture                          | ✅ (manual S3 presigned upload and independent human review; DigiLocker is outside the active scope)                            |
-| 3   | Independent verification per document                        | ✅                                                                                                                              |
-| 4   | Admin queue: pending → docs review → call pending → decision | ✅ (`queueStatus`)                                                                                                              |
-| 5   | Verification call logging                                    | ✅                                                                                                                              |
-| 6   | Approve/reject with reason                                   | ✅                                                                                                                              |
-| 7   | Re-application supported, history preserved                  | ✅                                                                                                                              |
-| 8   | Activation gate: only approved Pros visible to dispatch      | ✅ as far as this module goes — `Pro.status` is the gate; the dispatch engine itself (module 5) doesn't exist yet to consume it |
+| #   | Feature                                                      | Status                                                                         |
+| --- | ------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| 1   | In-app self-application, referral attribution                | ✅                                                                             |
+| 2   | Aadhaar/PAN manual document capture                          | ✅ Manual S3 presigned upload + human review; DigiLocker deliberately excluded |
+| 3   | Independent verification per document                        | ✅ With per-document correction messages                                       |
+| 4   | Admin queue: pending → docs review → call pending → decision | ✅ `queueStatus`                                                               |
+| 5   | Verification call logging                                    | ✅                                                                             |
+| 6   | Approve/reject with reason                                   | ✅                                                                             |
+| 7   | Re-application supported, history preserved                  | ✅ Rejected applicants authenticate but stay non-dispatchable                  |
+| 8   | Activation gate: only approved Pros visible to dispatch      | ✅ as far as this module goes — dispatch (M5) doesn't exist to consume it      |
 
 _Profile & capability (5/5)_
 
-| #   | Feature                                 | Status                                                                                                                                                 |
-| --- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 9   | Employee code + recorded monthly salary | 🔧 **Fixed this pass** — `employeeCode` auto-generates on approval, but nothing could ever set `monthlySalary`. Added `PATCH /admin/pros/:id/profile`. |
-| 10  | Home base coordinate                    | ✅ (Pro self-editable via `PATCH /pros/me`)                                                                                                            |
-| 11  | Service assignment with proficiency     | ✅                                                                                                                                                     |
-| 12  | Per-service suspension                  | ✅                                                                                                                                                     |
-| 13  | Bank account details                    | ✅                                                                                                                                                     |
+| #   | Feature                                 | Status                                                                                                                                         |
+| --- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 9   | Employee code + recorded monthly salary | ✅ `employeeCode` auto-generates on approval via a Postgres sequence; `PATCH /admin/pros/:id/profile` sets salary                              |
+| 10  | Home base coordinate                    | ✅                                                                                                                                             |
+| 11  | Service assignment with proficiency     | ✅ — `serviceId` now validated against the catalogue, and a real FK. A **draft** service is accepted, since Pros are trained ahead of a launch |
+| 12  | Per-service suspension                  | ✅                                                                                                                                             |
+| 13  | Bank account details                    | ✅ Masked storage, one-primary behaviour, self-verification rejected                                                                           |
 
 _Operations (6/6)_
 
-| #   | Feature                                                         | Status                                                                                                                                                                                                                                                 |
-| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 14  | Availability toggle, admin-only                                 | ✅                                                                                                                                                                                                                                                     |
-| 15  | Admin roster screen (filterable, bulk on/off)                   | ✅ (`GET /admin/pros` filters + `PATCH /admin/pros/availability/bulk`)                                                                                                                                                                                 |
-| 16  | Live location ingest into Redis GEO + cold flush                | 🔧 **Fixed this pass** — was entirely missing. Added `POST /pros/me/location`: writes to Redis GEO (`pros:live`) and cold-flushes `Pro.lastKnownLat/Lng` in the same call (simplest correct version of "periodic" until a real background job exists). |
-| 17  | Status lifecycle: applied → under_review → approved → suspended | ✅ (plus `rejected`, needed for the re-application flow)                                                                                                                                                                                               |
-| 18  | Acceptance rate, counters rebuilt nightly                       | ⏸ Counter columns exist; nothing populates them yet — correctly deferred, since they're driven by the Dispatch engine (module 5), which doesn't exist                                                                                                  |
-| 19  | Pro-facing profile/rating/acceptance-rate/history views         | ✅ (`GET /pros/me` returns the full profile; the numbers are 0 until modules 5/10 populate them, which is expected)                                                                                                                                    |
+| #   | Feature                                                         | Status                                                                                                     |
+| --- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 14  | Availability toggle, admin-only                                 | ✅                                                                                                         |
+| 15  | Admin roster screen (filterable, bulk on/off)                   | ✅                                                                                                         |
+| 16  | Live location ingest into Redis GEO + cold flush                | ✅ `POST /pros/me/location`                                                                                |
+| 17  | Status lifecycle: applied → under_review → approved → suspended | ✅ Plus `rejected`; three-gate reinstatement and non-dispatchability enforced                              |
+| 18  | Acceptance rate, counters rebuilt nightly                       | 🟡 `ProCountersService` is built and exact; nothing calls it yet because Dispatch (M5) is the caller       |
+| 19  | Pro-facing profile/rating/acceptance/history views              | ✅ `ProStandingService`; earnings/commission/payout views read correctly and stay readable while suspended |
 
-**Also found and fixed while auditing:** `Pro.cityId` existed as a schema column but no endpoint ever set it. Rolled into the same `PATCH /admin/pros/:id/profile` endpoint as the salary fix.
-
-**Gaps closed:** admin profile-update endpoint, location-ingest endpoint + Redis `GEOADD` helper — both migration-free, since `Pro.cityId`/`Pro.monthlySalary` already existed as ERD-sanctioned columns and location ingest only touches Redis + existing `lastKnownLat/Lng` columns.
+**Closed since 2026-08-07:** KYC `pg_advisory_xact_lock` 500 (Prisma non-result execution); controlled per-Pro private-S3 profile-photo upload + attach flow; server-side masked-format enforcement for bank and Aadhaar values; legal name/DOB/gender copied from verified KYC on approval and locked against self-service mutation; public/private profile separation with a Pro-owned-field allow-list.
 
 ---
 
-## ERD cross-check (2026-08-07, follow-up)
+## ERD cross-check
 
-Every table these three modules own was compared field-by-field against the authoritative v10 ER diagram (Eraser, team TheUnknownGMR) — the ERD, not the narrative doc, is the source of truth for actual column names/types per this project's established precedence.
+Every table these modules own was compared field-by-field against the
+authoritative v10 ER diagram (Eraser, team TheUnknownGMR). The ERD — not the
+narrative doc — is the source of truth for column names and types; the narrative
+doc governs the business-rule _why_.
 
-**Current development scope:** `Customer`, `City`, `Pro`, `ProApplication`, `ProService`, `ProBankAccount`, `Role`, and `AdminUser`. Administrative audit persistence has since been explicitly deferred and `AdminAuditLog` removed pending product decisions.
+> ⚠️ **The Eraser MCP connector is not authorised in this workspace**, so the
+> diagram cannot be pulled live. A verbatim copy was captured on 2026-08-10 at
+> [`ERD_DATA_MODEL_V10.md`](ERD_DATA_MODEL_V10.md) and modules 1, 2, 3 and 6
+> were reconciled against it. Re-paste it there if the diagram changes.
 
-**One deviation found and corrected:** `CustomerAddress.deliveryNotes` had been added in the pass above, prompted by `Modules_and_Features 1.md`'s feature #4 ("landmark **and** free-text delivery notes"). The ERD's `CustomerAddress` only has `landmark` — no separate notes field. Per this project's own rule (ERD wins on schema shape, the narrative doc wins on business-rule _why_), that column has been **removed** — migration `20260807122120_remove_customer_address_delivery_notes` — and `landmark` alone stands for both jobs, matching the ERD exactly. Module 2 is now 8/9 built, with delivery notes correctly out of scope until/unless the ERD is updated to add that column.
+**Module 3 was reconciled against the ERD before its migration was written**, and seven proposed field names lost to it — `durationMinutes` not `expectedDurationMinutes`, `flatPrice` not `price`, `supports*` not `allows*`, `parentCategoryId` not `parentId`, `sortOrder` not `displayOrder`. Two proposed columns were dropped outright: `Service.allowsCash` (named by a ground rule but absent from the ERD) and `updatedByAdminId` on both catalog tables. See [conflicts #13, #14 and #15](CONFLICTS_AND_DECISIONS.md).
 
-**Other things confirmed while cross-checking:**
+**Deviation found and corrected:** `CustomerAddress.deliveryNotes` was added,
+then removed (`20260807122120_remove_customer_address_delivery_notes`), because
+the ERD's `CustomerAddress` carries `landmark` only. Net schema effect: none.
+That is why module 2 is 8/9 rather than 9/9.
 
-- `Pro.cityId` and `Pro.monthlySalary` were already ERD-sanctioned columns from the original build — this pass only added the missing _endpoint_ to write them, not new schema.
-- The location-ingest endpoint uses the exact Redis key the ERD specifies (`pros:live`), not an invented one.
-- Admin-id reference columns on `ProApplication` (`reviewedByAdminId`, `aadhaarVerifiedByAdminId`, `panVerifiedByAdminId`) are plain string columns, not formal Prisma `@relation`s to `AdminUser` — this matches the ERD's own diagram (it draws these as FK arrows without them being enforced relations in every ORM sense) and was a pre-existing choice, not something this pass changed.
-- Nothing in modules 1/2/6 currently _writes_ `pushToken`/`pushPlatform` on any of the three user tables (columns exist per the ERD, correctly reserved for when Notifications — module 12 — needs them). Worth knowing, not a gap in this scope.
+**Confirmed while cross-checking:**
 
----
-
-## What's genuinely out of scope (not a gap — a dependency on an unbuilt module)
-
-| Deferred item                                        | Needs                                          | Where the seam is                           |
-| ---------------------------------------------------- | ---------------------------------------------- | ------------------------------------------- |
-| City resolution from coordinate, real serviceability | Module 13 (Geo & Routing)                      | `customers.service.ts`                      |
-| Razorpay customer object                             | Module 7 (Payments)                            | `Customer.razorpayCustomerId` column, unset |
-| Address in-flight-booking guard                      | Module 4 (Booking)                             | `TODO` comment in `customers.service.ts`    |
-| Dispatch consuming `Pro.status`/`ProService`         | Module 5 (Dispatch Engine)                     | N/A yet                                     |
-| Rating/acceptance-rate/completedJobs counters        | Modules 5 (Dispatch) + 10 (Training & Reviews) | Columns exist, default 0                    |
-
----
-
-## Test results
-
-**Unit tests — 41 passed, 6 suites, 0 failed**
-New this pass: `auth.service.spec.ts` (OTP rate limiting, guest→verified upgrade, blocked customer rejection, suspended Pro access, admin provisioning), `permissions.guard.spec.ts` (per-request permission enforcement), `customers.service.spec.ts` (profile and address behavior), and Pro tests covering manual-only KYC, lifecycle gates, exact counters and standing semantics.
-
-**e2e tests — 13 passed, 3 suites, 0 failed**
-`app.e2e-spec.ts`, `envelope.e2e-spec.ts` (response envelope + validation contract), `swagger-envelope.e2e-spec.ts` (OpenAPI schema matches runtime envelope shape).
-
-**Static checks — all clean**
-`npm run build` (nest/tsc), `npm run typecheck` (`tsc --noEmit`, whole project incl. tests), `npm run lint` (eslint --fix, 0 errors).
-
-**Live verification against real infra**
-Booted the full app against the actual AWS RDS instance with local Redis (Docker, DB index 1): Prisma connects, Redis connects, all migrations applied, Swagger mounts, every route registers — including the new `POST /pros/me/location`.
+- `Pro.cityId` and `Pro.monthlySalary` were already ERD-sanctioned columns; the 08-07 pass added only the missing endpoint.
+- Location ingest uses the ERD's exact Redis key (`pros:live`), not an invented one.
+- Admin-id columns on `ProApplication` are plain strings, not Prisma `@relation`s — matching the ERD's own drawing. Pre-existing, not changed.
+- `pushToken` / `pushPlatform` exist on all three user tables and are written by nothing yet. Correct — they belong to module 12.
+- `AdminAuditLog` was removed pending product decisions (`20260808230000_defer_admin_audit_log`).
 
 ---
 
-## Live curl verification (2026-08-07, follow-up)
+## Out of scope — dependencies on unbuilt modules, not gaps
 
-Every flow below was exercised end-to-end against the running app (real RDS + real Redis, no mocks besides the OTP provider, which is intentionally mocked pending an SMS vendor).
-
-| Flow               | Steps exercised                                                                                                                                                                                                | Result                                                                                                                                                                                                                                                                                                                              |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Health / Catalog   | `GET /health`, `GET /cities` (after seeding one test City row)                                                                                                                                                 | ✅ both return the correct envelope shape                                                                                                                                                                                                                                                                                           |
-| Customer           | OTP request → verify (auto-creates Customer) → `GET /customers/me` → `PATCH /customers/me` (rejects unknown `name` field, accepts `fullName`) → `POST /customers/me/addresses` → `GET /customers/me/addresses` | ✅ first address auto-set as default; `geoPoint` correctly derived from `pinLat`/`pinLng`                                                                                                                                                                                                                                           |
-| Pro                | OTP request → verify → `GET /pros/me` → `POST /pros/me/applications` (submits Aadhaar+PAN, `queueStatus: pending`) → `POST /pros/me/location` (Redis GEO + cold-flush)                                         | ✅ all as expected. `POST /pros/me/kyc/upload-url` returned 500 (`CredentialsProviderError`) — **expected**, not a bug: `AWS_ACCESS_KEY_ID`/`SECRET` are intentionally blank in `.env.local` since S3 access is meant to come from the EC2 instance's IAM role in production, and this box has no local AWS credentials configured. |
-| Admin (KYC review) | OTP login as seeded `super_admin` → `GET /admin/pro-applications` → `PATCH .../verify-document` (aadhaar, then pan) → `PATCH .../log-call` → `PATCH .../decision` (approved)                                   | ✅ `queueStatus` progressed `pending → docs_review → call_pending → approved` exactly per the state machine; `Pro.status` flipped to `approved` with `approvedApplicationId` set                                                                                                                                                    |
-| Admin (Pro ops)    | `GET /admin/pros` → `PATCH /admin/pros/:id/profile` (cityId + monthlySalary) → `PATCH /admin/pros/:id/availability`                                                                                            | ✅ `employeeCode` auto-generated (`HG-00001`) on approval via the Postgres sequence; `monthlySalary` round-trips as a Decimal string (`"18000"`), as expected for a `Decimal` column                                                                                                                                                |
-| Errors             | No token on `/customers/me`; customer token on `/admin/pros`; malformed OTP request payload                                                                                                                    | ✅ 401 `"Missing bearer token"`, 403 `"Admin permissions required"`, 400 with per-field `class-validator` messages — all in the standard error envelope                                                                                                                                                                             |
-
-No behavioral bugs found. The one 500 seen (S3 upload-url) is a missing local credential, not an application defect — it will work as-is once deployed to EC2 with the IAM role attached, or if local AWS credentials are added to `.env.local` for dev-time testing.
+| Deferred item                            | Needs                    | Where the seam is                                                                          |
+| ---------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------ |
+| Automatic assignment; slot availability  | Module 5 (Dispatch)      | **`DispatchPort`** — swap one `provide` line in `bookings.module.ts`                       |
+| Online payment; refund execution         | Module 7 (Payments)      | **`PaymentsPort`** — same                                                                  |
+| Commission on completion                 | Module 8                 | `ServiceCatalogService.getCommissionConfig()` built; completion emits the event            |
+| Live ETA and `routeTrail` sampling       | Module 13                | Redis holds current position; nothing accumulates a trail                                  |
+| Push on any booking transition           | Module 12                | Transitions are recorded; no dispatcher listens                                            |
+| `no_start` ticket on grace-window expiry | Module 11                | `no_start.graceWindowMinutes` configured; nothing watches it                               |
+| Review after completion                  | Module 10                | `Review` stubbed; module 10 owns it                                                        |
+| Invoice PDF                              | No PDF tooling           | Number, tax and `invoicedAt` are generated                                                 |
+| Rating counters being _written_          | Module 10                | `ProCountersService.recordReview` built, uncalled. **`recordCompletion` now has a caller** |
+| Admin audit of any mutation              | Module 15                | `AdminAuditLog` deferred by decision; catalog edits carry no attribution                   |
+| Catalog → SDUI home config               | Module 14                | `UiConfig` does not exist; category `slug` is the intended join key                        |
+| Per-service cash eligibility             | ERD change + module 7    | No `Service.allowsCash` column exists                                                      |
+| Live SMS OTP                             | Synquic Slide API key    | Provider implemented; key absent                                                           |
+| S3 upload of real bytes                  | AWS creds / EC2 IAM role | Presigned URL generation works                                                             |
 
 ---
 
-## Net change this pass
+## Verification
 
-- 2 migrations: `add_customer_address_delivery_notes` then `remove_customer_address_delivery_notes` (added, then reverted after the ERD cross-check — net schema effect: none, `CustomerAddress` is unchanged from before this pass)
-- 2 new endpoints: `PATCH /admin/pros/:id/profile`, `POST /pros/me/location`
-- 1 new Redis helper (`RedisService.geoAdd`)
-- 5 new spec files, 41 new/existing unit tests, all green
-- 0 regressions — full existing test suite (e2e) still 13/13
+**Run 2026-08-10, after the module 4 build:**
+
+| Check                     | Result                                                                                                     |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `npx jest` (unit)         | **24 suites / 212 tests passed** — was 16/85 before modules 3 and 4                                        |
+| `npm run test:e2e`        | **6 suites / 125 tests passed** — was 3/13                                                                 |
+| `npm run typecheck`       | **Pass** (`tsc --noEmit`, whole project incl. tests)                                                       |
+| `npm run build`           | **Pass** (`nest build`)                                                                                    |
+| `eslint --max-warnings=0` | **Pass** across `src`, `prisma` and `test`                                                                 |
+| `prisma validate`         | **Pass**                                                                                                   |
+| Migration ↔ schema parity | Hand-written SQL diffed against `prisma migrate diff` output — columns, index names and FK names all match |
+
+Module 4 added 76 unit tests and 72 e2e assertions. The unit tests cover every rule in §4's table and **all 81 (from, to) pairs of the state machine**, legal and illegal. The e2e assertions are the Swagger contract: every booking route published as the envelope, bearer auth everywhere, the `409` documented on every route a state-machine rule can refuse, the `501` an online booking gets while Payments is unbuilt, `flatPrice` typed `string`, no contact detail anywhere in the chat schema, and **no route under `/pros/` matching `/cancel/i`** — principle 2 asserted as a test rather than a convention.
+
+Module 3 contributed 51 unit tests and 40 e2e assertions before it, including 3 that compile the real `AppModule` to prove the Catalog ↔ Pros `forwardRef` resolves. That test now also covers module 4's wiring.
+
+### Live verification against a real database — 2026-08-10
+
+All 12 migrations were applied to a throwaway PostgreSQL 18 cluster (`initdb`, trust auth, port 55433), seeded, and driven end to end. **Neither the shared RDS instance nor the developer's own local cluster was touched** — the RDS credentials in `.env.local` no longer authenticate, and `DATABASE_URL` there is still blank.
+
+| Check                           | Result                                                                                   |
+| ------------------------------- | ---------------------------------------------------------------------------------------- |
+| `prisma migrate deploy`         | **12/12 applied**, including the three new ones                                          |
+| `migrate diff` live DB ↔ schema | **"No difference detected"** — the hand-written SQL produces exactly what Prisma expects |
+| `prisma db seed`                | 4 roles, admin, 2 cities, 5 categories, 3 services                                       |
+| Schema shape                    | 22 tables; `bookings` at **42 columns**, matching the ERD; both `serviceId`s now `uuid`  |
+| **Database guards**             | **18/18 rejected** — see below                                                           |
+| **Cash lifecycle cURL suite**   | **24/24 passed** — `test/manual/run-booking-lifecycle-curl.sh`                           |
+
+Every `CHECK` constraint was tested by trying to violate it. All 18 were refused: an active service with no commission rate, a percent rate above 100, an active service no flow can book, a self-parenting category, a service in a missing category, an invalid booking status, `paymentMode = 'crypto'`, **a cancellation attributed to a Pro**, a `started` booking with no `startedAt`, a `completed` one with no `completedAt`, a `cancelled` one with no `cancelledAt`, an invalid `bookingType`, a negative price, `frequency = 'hourly'`, `timeOfDay = '25:00'`, an end date before its start date, a chat message from ops, and a photo typed `selfie`.
+
+Both migration guards were tested too. Against a table holding one booking, the `flatPrice` guard raised its exact message and refused. Against a pre-migration database holding `serviceId = 'plumbing-legacy-code'`, the FK guard raised and **left the column as `text`** — nothing half-migrated.
+
+The lifecycle run produced this timeline, coordinates and all:
+
+```
+created → assigning → assigned → en_route → arrived → start_otp_failed → started → photo_proof_added → completed
+```
+
+with `flatPrice` frozen at `699.00`, `taxAmount` `106.63` (the component _within_ the price — [conflict #28](CONFLICTS_AND_DECISIONS.md)), invoice `INV-2026-000006`, booking number `HB-2026-000004`, and 8 geo-stamped events.
+
+### Two defects the live run exposed — both fixed
+
+Neither was reachable by unit tests, because both hide behind mocks.
+
+1. **All four advisory locks in `ProCountersService` used `$queryRaw` on a `void`-returning function**, which crashes Prisma. The identical bug was found and fixed in `pro-applications.service.ts` during the 08-08 pass — with an explanatory comment — but the counters service was never corrected, because **none of its four methods had a caller**. `recordCompletion` acquired one in this module and crashed on the first real call. `recordOffer`, `recordAcknowledgement` and `recordReview` would have done the same for modules 5 and 10.
+2. **`recordCompletion` had become a silent no-op.** It still performed the completion itself — setting `status`/`completedAt` and writing the status event — from when module 4 did not exist. Its first line was `if (booking.status === 'completed') return;`, which is exactly the state its only caller now hands it, so **`completedJobs` never incremented**. It has been reduced to the counter it should be, made idempotent by a marker event, and the completion call site treats a counter failure as non-fatal — derived data is rebuilt nightly and source wins, so a finished job must not report failure because a statistic did not move.
+
+Unit tests could not have caught either: they mock `$queryRaw` as a `jest.fn()` and assert on calls, not on Postgres's response.
+
+**From the 2026-08-08 pass** (see [`reports/FINAL_VERIFICATION_REPORT_2026-08-08.md`](reports/FINAL_VERIFICATION_REPORT_2026-08-08.md)) — not re-run today:
+
+| Check                                 | Result                                                            |
+| ------------------------------------- | ----------------------------------------------------------------- |
+| Full HTTP/cURL suite                  | 182/185 first run → **185/185** after a geocoder-dependency rerun |
+| Prisma migrations on fresh PostgreSQL | 9/9 applied                                                       |
+| Bootstrap seed                        | 4 system roles + super admin                                      |
+
+That run deliberately used a mock OTP provider, a local Redis-compatible
+process, deterministic local Nominatim responses, presigned-URL generation
+without real uploads, and a local PostgreSQL 18 — not the managed production
+equivalents. The 100% figure covers implemented routes in the local integration
+scope; it is not a claim that unconfigured external systems are certified.
+
+Reproduction: `test/manual/run-all-curl-tests.ps1` (honours `CURL_TEST_APP_LOG`).
+
+---
+
+## Migrations (12 — all applied and verified 2026-08-10)
+
+```
+20260807112307_init
+20260807112404_add_employee_code_sequence
+20260807120244_add_customer_address_delivery_notes
+20260807122120_remove_customer_address_delivery_notes
+20260808120000_add_guest_retention_index
+20260808180000_enforce_one_default_customer_address
+20260808220000_add_pro_profile_and_kyc_identity
+20260808230000_defer_admin_audit_log
+20260809000000_add_pro_standing_sources
+20260810120000_add_service_catalog          ← new
+20260810120100_link_service_foreign_keys    ← new, HIGH BLAST RADIUS, guard verified
+20260810140000_add_booking_lifecycle        ← new, guard verified
+```
+
+`link_service_foreign_keys` is separate from the catalogue tables on purpose: it rewrites `pro_services.serviceId` and `bookings.serviceId` from `TEXT` to `UUID` and adds foreign keys, so it fails on any row whose `serviceId` is not a real `services.id`. **Seed the catalogue and remap any existing rows before running it.**
+
+`add_booking_lifecycle` adds `bookings.flatPrice` as `NOT NULL`, because every booking has a price from the instant it exists and making the column nullable would permanently weaken the guarantee US-3.2 depends on. It therefore **refuses to run if any booking row already exists**, rather than inventing a price for rows that predate the column.
+
+Both open with a `DO` block that counts the offending rows and raises a readable exception naming them, instead of letting a raw cast or constraint error surface.
+
+---
+
+## Recommendation
+
+Phase 1 of the documented build order is complete bar Config, and phase 3's larger half is done: Identity, Customer Profile, Catalog, Pro Management and Booking are all built. Five of fifteen modules, and the ones every other module reads from.
+
+**Modules 3 and 4 are verified against a real database.** All 12 migrations apply cleanly, the live schema matches Prisma exactly, all 18 database guards refuse what they should, and a cash job runs from creation to invoice — 24/24 in `test/manual/run-booking-lifecycle-curl.sh`. Two latent defects in module 6's counters were found and fixed in the process.
+
+**Two environment problems are worth fixing before anyone else picks this up.** `.env.local`'s `DATABASE_URL` is blank, and because the config layering takes the _first_ file that defines a key, that blank value **shadows any fallback** rather than falling through — it is why nothing could connect. Separately, the RDS credentials in the `DB_*` vars no longer authenticate. Note the `DB_*` vars are TypeORM-era leftovers that nothing reads any more; only `DATABASE_URL` matters.
+
+**Then module 5 (Dispatch).** It is now the single highest-value thing left: `DispatchPort` is defined and stubbed, so the work is implementing one interface rather than threading a new concern through the booking lifecycle. Until it lands, ops assigns every job by hand, and that is the difference between a working demo and a product.
+
+**Module 7 (Payments) unblocks the other half of the funnel.** Online bookings currently fail at creation with a documented `501`; cash works end to end. `PaymentsPort` is the same shape of job.
+
+Three decisions worth taking to product before they calcify:
+
+1. **Catalog edits have no audit trail at all** — not even last-editor. That is a real ops risk on a table that holds prices and pay rates.
+2. **Per-service cash eligibility does not exist**, despite a ground rule naming `Service.allowsCash`. If cash is meant to be restrictable per service, the ERD needs the column. Right now every service can be booked as cash, which is also the only mode that works.
+3. **The flat price is treated as tax-inclusive** ([conflict #28](CONFLICTS_AND_DECISIONS.md)) — a ₹599 service invoices at ₹599 with ₹91.37 recorded as the GST component within it. Finance should confirm the catalogue prices were set on that basis; if they were meant to be pre-tax, every seeded price is wrong rather than the code.

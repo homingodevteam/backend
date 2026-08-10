@@ -4,6 +4,8 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { BookingsModule } from './modules/bookings/bookings.module';
+import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { IdentityModule } from './modules/identity/identity.module';
@@ -27,6 +29,8 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
     IdentityModule,
     CustomersModule,
     ProsModule,
+    BookingsModule,
+    DispatchModule,
   ],
   controllers: [AppController],
   providers: [AppService],
