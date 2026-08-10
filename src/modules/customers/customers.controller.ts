@@ -17,15 +17,17 @@ import {
   ApiOkEnvelope,
 } from '../../common/swagger/api-envelope.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type';
-import type { Customer, CustomerAddress } from '../../prisma/client';
+import type { CustomerAddress } from '../../prisma/client';
 import { RequireActorType } from '../identity/decorators/require-actor-type.decorator';
 import { ActorTypeGuard } from '../identity/guards/actor-type.guard';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { CustomersService } from './customers.service';
 import { CreateAddressDto } from './dto/create-address.dto';
 import { CustomerAddressDto } from './dto/customer-address.dto';
-import { CustomerDto } from './dto/customer.dto';
+import { CustomerProfileDto } from './dto/customer-profile.dto';
 import { ServiceabilityResponseDto } from './dto/serviceability-response.dto';
+import { ReverseGeocodeQueryDto } from './dto/reverse-geocode-query.dto';
+import { ReverseGeocodeResponseDto } from './dto/reverse-geocode-response.dto';
 import { UpdateAddressDto } from './dto/update-address.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 
@@ -37,23 +39,41 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
+  @Get('addresses/reverse-geocode')
+  @ApiOperation({
+    summary: 'Reverse geocode a map pin and resolve serviceability',
+  })
+  @ApiOkEnvelope(ReverseGeocodeResponseDto)
+  @ApiErrorEnvelope(
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.UNPROCESSABLE_ENTITY,
+    HttpStatus.SERVICE_UNAVAILABLE,
+  )
+  reverseGeocode(
+    @Query() query: ReverseGeocodeQueryDto,
+  ): Promise<ReverseGeocodeResponseDto> {
+    return this.customersService.reverseGeocode(query.pinLat, query.pinLng);
+  }
+
   @Get()
   @ApiOperation({ summary: 'Get my profile' })
-  @ApiOkEnvelope(CustomerDto)
+  @ApiOkEnvelope(CustomerProfileDto)
   @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.NOT_FOUND)
-  getProfile(@CurrentUser() user: AuthenticatedUser): Promise<Customer> {
-    return this.customersService.getById(user.id);
+  getProfile(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<CustomerProfileDto> {
+    return this.customersService.getProfile(user.id);
   }
 
   @Patch()
   @ApiOperation({ summary: 'Update my profile' })
-  @ApiOkEnvelope(CustomerDto)
+  @ApiOkEnvelope(CustomerProfileDto)
   @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.NOT_FOUND)
   updateProfile(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: UpdateCustomerDto,
-  ): Promise<Customer> {
-    return this.customersService.update(user.id, dto);
+  ): Promise<CustomerProfileDto> {
+    return this.customersService.updateProfile(user.id, dto);
   }
 
   @Get('addresses')

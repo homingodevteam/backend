@@ -173,9 +173,6 @@ export class AuthService {
     pro ??= await this.prisma.pro.create({
       data: { phone, status: 'applied' },
     });
-    if (pro.status === 'rejected') {
-      throw new UnauthorizedException(`Account is ${pro.status}`);
-    }
     return {
       id: pro.id,
       actorType: 'pro',

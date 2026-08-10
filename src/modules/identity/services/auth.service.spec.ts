@@ -303,6 +303,29 @@ describe('AuthService', () => {
       );
     });
 
+    it('allows a rejected Pro to authenticate for a new application attempt', async () => {
+      const deps = buildDeps();
+      deps.otpProvider.verifyOtp.mockResolvedValue(true);
+      deps.prisma.pro.findUnique.mockResolvedValue({
+        id: 'p-rejected',
+        status: 'rejected',
+      });
+      const service = buildService(deps);
+
+      await service.verifyOtp({
+        phone: '+919876543210',
+        code: '123456',
+        providerRef: 'ref-1',
+        actorType: 'pro',
+      });
+
+      expect(deps.tokenService.issueTokenPair).toHaveBeenCalledWith({
+        id: 'p-rejected',
+        actorType: 'pro',
+        accessMode: 'full',
+      });
+    });
+
     it('never auto-creates an admin — 404 if the phone is unregistered', async () => {
       const deps = buildDeps();
       deps.otpProvider.verifyOtp.mockResolvedValue(true);

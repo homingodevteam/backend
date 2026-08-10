@@ -8,10 +8,17 @@ export type ProStatus =
   'applied' | 'under_review' | 'approved' | 'suspended' | 'rejected';
 
 export type QueueStatus =
-  'pending' | 'docs_review' | 'call_pending' | 'approved' | 'rejected';
+  | 'pending'
+  | 'docs_review'
+  | 'call_pending'
+  | 'changes_requested'
+  | 'approved'
+  | 'rejected';
 
-export type DocumentSource = 'manual' | 'digilocker';
+export type DocumentSource = 'manual';
 export type DocumentStatus = 'pending' | 'verified' | 'rejected';
 export type ReferredByType = 'pro' | 'customer' | 'none';
-export type ApplicationDecision = 'approved' | 'rejected';
+export type ApplicationDecision = 'approved' | 'rejected' | 'changes_requested';
+export type VerifiedByType = 'system' | 'admin';
+export type DocumentGender = 'male' | 'female' | 'transgender';
 export type Proficiency = 'trainee' | 'skilled' | 'expert';

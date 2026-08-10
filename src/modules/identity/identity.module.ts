@@ -19,7 +19,6 @@ import {
   SlideOtpProvider,
 } from './otp/slide-otp-provider.service';
 import { AdminUsersService } from './services/admin-users.service';
-import { AuditLogService } from './services/audit-log.service';
 import { AuthService } from './services/auth.service';
 import { RolesService } from './services/roles.service';
 import { TokenService } from './services/token.service';
@@ -73,7 +72,6 @@ import { TokenService } from './services/token.service';
     },
     TokenService,
     AuthService,
-    AuditLogService,
     RolesService,
     AdminUsersService,
     JwtAuthGuard,
@@ -86,7 +84,6 @@ import { TokenService } from './services/token.service';
     PermissionsGuard,
     CityScopeGuard,
     ActorTypeGuard,
-    AuditLogService,
     TokenService,
   ],
 })

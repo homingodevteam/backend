@@ -48,7 +48,7 @@ export class JwtAuthGuard implements CanActivate {
       );
       if (!allowed) {
         throw new ForbiddenException(
-          'Suspended Pros may only view earnings and payout history',
+          'Suspended Pros have read-only access to standing and historical records',
         );
       }
     }

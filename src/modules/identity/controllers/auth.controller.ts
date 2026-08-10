@@ -45,6 +45,8 @@ export class AuthController {
     HttpStatus.BAD_REQUEST,
     HttpStatus.UNAUTHORIZED,
     HttpStatus.NOT_FOUND,
+    HttpStatus.TOO_MANY_REQUESTS,
+    HttpStatus.SERVICE_UNAVAILABLE,
   )
   requestOtp(@Body() dto: RequestOtpDto): Promise<{ providerRef: string }> {
     return this.authService.requestOtp(dto);
@@ -53,7 +55,12 @@ export class AuthController {
   @Post('otp/verify')
   @ApiOperation({ summary: 'Verify an OTP and receive a token pair' })
   @ApiOkEnvelope(TokenPairDto)
-  @ApiErrorEnvelope(HttpStatus.BAD_REQUEST, HttpStatus.UNAUTHORIZED)
+  @ApiErrorEnvelope(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.TOO_MANY_REQUESTS,
+    HttpStatus.SERVICE_UNAVAILABLE,
+  )
   verifyOtp(@Body() dto: VerifyOtpDto): Promise<TokenPair> {
     return this.authService.verifyOtp(dto);
   }

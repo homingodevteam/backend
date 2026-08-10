@@ -6,17 +6,13 @@ import {
   Param,
   Patch,
   Post,
-  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { FastifyRequest } from 'fastify';
-import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import {
   ApiErrorEnvelope,
   ApiOkEnvelope,
 } from '../../../common/swagger/api-envelope.decorator';
-import type { AuthenticatedUser } from '../../../common/types/authenticated-user.type';
 import type { AdminUser } from '../../../prisma/client';
 import { PermissionCode } from '../constants/permission-code';
 import { RequirePermissions } from '../decorators/require-permissions.decorator';
@@ -52,12 +48,8 @@ export class AdminUsersController {
     HttpStatus.BAD_REQUEST,
     HttpStatus.CONFLICT,
   )
-  create(
-    @Body() dto: CreateAdminUserDto,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
-  ): Promise<AdminUser> {
-    return this.adminUsersService.create(dto, actor.id, request.ip ?? null);
+  create(@Body() dto: CreateAdminUserDto): Promise<AdminUser> {
+    return this.adminUsersService.create(dto);
   }
 
   @Patch(':id')
@@ -72,9 +64,7 @@ export class AdminUsersController {
   update(
     @Param('id') id: string,
     @Body() dto: UpdateAdminUserDto,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<AdminUser> {
-    return this.adminUsersService.update(id, dto, actor.id, request.ip ?? null);
+    return this.adminUsersService.update(id, dto);
   }
 }

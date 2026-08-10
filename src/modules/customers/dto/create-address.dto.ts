@@ -5,7 +5,6 @@ import {
   IsLongitude,
   IsOptional,
   IsString,
-  IsUUID,
 } from 'class-validator';
 import type { AddressLabel } from '../customers.types';
 
@@ -32,8 +31,4 @@ export class CreateAddressDto {
   @ApiProperty()
   @IsLongitude()
   pinLng: number;
-
-  @ApiProperty()
-  @IsUUID()
-  cityId: string;
 }

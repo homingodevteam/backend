@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -17,15 +18,20 @@ import {
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type';
 import type { Pro, ProApplication, ProBankAccount } from '../../prisma/client';
 import { RequireActorType } from '../identity/decorators/require-actor-type.decorator';
+import { AllowSuspendedProRead } from '../identity/decorators/allow-suspended-pro-read.decorator';
 import { ActorTypeGuard } from '../identity/guards/actor-type.guard';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { CreateBankAccountDto } from './dto/create-bank-account.dto';
 import { IngestLocationDto } from './dto/ingest-location.dto';
+import { HistoryQueryDto } from './dto/history-query.dto';
 import { KycUploadUrlResponseDto } from './dto/kyc-upload-url-response.dto';
 import { ProApplicationDto } from './dto/pro-application.dto';
 import { ProBankAccountDto } from './dto/pro-bank-account.dto';
 import { ProDto } from './dto/pro.dto';
+import { ProStandingDto } from './dto/pro-standing.dto';
 import { RequestKycUploadUrlDto } from './dto/request-kyc-upload-url.dto';
+import { RequestProfilePhotoUploadUrlDto } from './dto/request-profile-photo-upload-url.dto';
+import { SetProfilePhotoDto } from './dto/set-profile-photo.dto';
 import { SubmitProApplicationDto } from './dto/submit-pro-application.dto';
 import { UpdateBankAccountDto } from './dto/update-bank-account.dto';
 import { UpdateProDto } from './dto/update-pro.dto';
@@ -33,6 +39,8 @@ import { KycDocumentsService } from './kyc-documents.service';
 import { ProApplicationsService } from './pro-applications.service';
 import { ProBankAccountsService } from './pro-bank-accounts.service';
 import { ProsService } from './pros.service';
+import { ProStandingService } from './pro-standing.service';
+import { ProProfilePhotoService } from './pro-profile-photo.service';
 
 @ApiTags('Pros')
 @ApiBearerAuth('access-token')
@@ -45,6 +53,8 @@ export class ProsController {
     private readonly applicationsService: ProApplicationsService,
     private readonly bankAccountsService: ProBankAccountsService,
     private readonly kycDocumentsService: KycDocumentsService,
+    private readonly standingService: ProStandingService,
+    private readonly profilePhotoService: ProProfilePhotoService,
   ) {}
 
   @Get()
@@ -64,6 +74,101 @@ export class ProsController {
     @Body() dto: UpdateProDto,
   ): Promise<Pro> {
     return this.prosService.update(user.id, dto);
+  }
+
+  @Post('profile-photo/upload-url')
+  @ApiOperation({ summary: 'Get a private S3 upload URL for my profile photo' })
+  @ApiOkEnvelope(KycUploadUrlResponseDto)
+  requestProfilePhotoUploadUrl(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: RequestProfilePhotoUploadUrlDto,
+  ): Promise<{ key: string; uploadUrl: string; expiresIn: number }> {
+    return this.profilePhotoService.requestUploadUrl(user.id, dto);
+  }
+
+  @Patch('profile-photo')
+  @ApiOperation({
+    summary: 'Attach an issued private S3 photo key to my profile',
+  })
+  @ApiOkEnvelope(ProDto)
+  setProfilePhoto(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: SetProfilePhotoDto,
+  ): Promise<Pro> {
+    return this.profilePhotoService.setPhoto(user.id, dto.key);
+  }
+
+  @Get('standing')
+  @AllowSuspendedProRead()
+  @ApiOperation({
+    summary: 'My standing; rating affects dispatch, acceptance does not',
+  })
+  @ApiOkEnvelope(ProStandingDto)
+  standing(@CurrentUser() user: AuthenticatedUser): Promise<ProStandingDto> {
+    return this.standingService.standing(user.id);
+  }
+
+  @Get('jobs')
+  @AllowSuspendedProRead()
+  @ApiOperation({ summary: 'My paginated job history' })
+  @ApiOkEnvelope()
+  jobs(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: HistoryQueryDto,
+  ) {
+    return this.standingService.jobs(user.id, query);
+  }
+
+  @Get('ratings')
+  @AllowSuspendedProRead()
+  @ApiOperation({ summary: 'Ratings I have received' })
+  @ApiOkEnvelope()
+  ratings(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: HistoryQueryDto,
+  ) {
+    return this.standingService.ratings(user.id, query);
+  }
+
+  @Get('earnings')
+  @AllowSuspendedProRead()
+  @ApiOperation({ summary: 'Commission-only earnings summary' })
+  @ApiOkEnvelope()
+  earnings(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: HistoryQueryDto,
+  ) {
+    return this.standingService.earnings(user.id, query);
+  }
+
+  @Get('commissions')
+  @AllowSuspendedProRead()
+  @ApiOperation({ summary: 'My commission history' })
+  @ApiOkEnvelope()
+  commissions(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: HistoryQueryDto,
+  ) {
+    return this.standingService.commissions(user.id, query);
+  }
+
+  @Get('payouts')
+  @AllowSuspendedProRead()
+  @ApiOperation({ summary: 'My payout history' })
+  @ApiOkEnvelope()
+  payouts(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: HistoryQueryDto,
+  ) {
+    return this.standingService.payouts(user.id, query);
+  }
+
+  @Get('payouts/:id')
+  @AllowSuspendedProRead()
+  @ApiOperation({ summary: 'One payout and the commissions it covered' })
+  @ApiOkEnvelope()
+  payout(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.standingService.payout(user.id, id);
   }
 
   @Post('location')

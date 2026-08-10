@@ -18,11 +18,30 @@ export class ProApplicationDto {
   submittedAt: Date | null;
 
   @ApiProperty({
-    enum: ['pending', 'docs_review', 'call_pending', 'approved', 'rejected'],
+    enum: [
+      'pending',
+      'docs_review',
+      'call_pending',
+      'changes_requested',
+      'approved',
+      'rejected',
+    ],
   })
   queueStatus: string;
 
-  @ApiPropertyOptional({ nullable: true, enum: ['manual', 'digilocker'] })
+  @ApiPropertyOptional({ nullable: true })
+  documentFullName: string | null;
+
+  @ApiPropertyOptional({ nullable: true, format: 'date' })
+  documentDateOfBirth: Date | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    enum: ['male', 'female', 'transgender'],
+  })
+  documentGender: string | null;
+
+  @ApiPropertyOptional({ nullable: true, enum: ['manual'] })
   aadhaarSource: string | null;
 
   @ApiPropertyOptional({ nullable: true })
@@ -34,6 +53,9 @@ export class ProApplicationDto {
   @ApiProperty({ enum: ['pending', 'verified', 'rejected'] })
   aadhaarStatus: string;
 
+  @ApiPropertyOptional({ nullable: true, enum: ['system', 'admin'] })
+  aadhaarVerifiedByType: string | null;
+
   @ApiPropertyOptional({ nullable: true })
   aadhaarVerifiedByAdminId: string | null;
 
@@ -43,7 +65,7 @@ export class ProApplicationDto {
   @ApiPropertyOptional({ nullable: true })
   aadhaarRejectionReason: string | null;
 
-  @ApiPropertyOptional({ nullable: true, enum: ['manual', 'digilocker'] })
+  @ApiPropertyOptional({ nullable: true, enum: ['manual'] })
   panSource: string | null;
 
   @ApiPropertyOptional({ nullable: true })
@@ -55,6 +77,9 @@ export class ProApplicationDto {
   @ApiProperty({ enum: ['pending', 'verified', 'rejected'] })
   panStatus: string;
 
+  @ApiPropertyOptional({ nullable: true, enum: ['system', 'admin'] })
+  panVerifiedByType: string | null;
+
   @ApiPropertyOptional({ nullable: true })
   panVerifiedByAdminId: string | null;
 
@@ -65,18 +90,15 @@ export class ProApplicationDto {
   panRejectionReason: string | null;
 
   @ApiPropertyOptional({ nullable: true })
-  digilockerRequestId: string | null;
-
-  @ApiPropertyOptional({ nullable: true })
-  digilockerFetchedAt: Date | null;
-
-  @ApiPropertyOptional({ nullable: true })
   reviewedByAdminId: string | null;
 
   @ApiPropertyOptional({ nullable: true })
   verificationCallAt: Date | null;
 
-  @ApiPropertyOptional({ nullable: true, enum: ['approved', 'rejected'] })
+  @ApiPropertyOptional({
+    nullable: true,
+    enum: ['approved', 'rejected', 'changes_requested'],
+  })
   decision: string | null;
 
   @ApiPropertyOptional({ nullable: true })

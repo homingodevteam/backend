@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, Matches } from 'class-validator';
 
 export class CreateBankAccountDto {
   @ApiProperty()
@@ -8,6 +8,10 @@ export class CreateBankAccountDto {
 
   @ApiProperty()
   @IsString()
+  @Matches(/^X{4,}\d{4}$/, {
+    message:
+      'accountNumberMasked must contain only masking Xs and the last 4 digits',
+  })
   accountNumberMasked: string;
 
   @ApiProperty()

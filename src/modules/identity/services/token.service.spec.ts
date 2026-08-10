@@ -72,4 +72,23 @@ describe('TokenService', () => {
     );
     expect(redis.delByPattern).toHaveBeenCalledWith('session:customer:c1:*');
   });
+
+  it('keeps rejected Pros authenticated so they can reapply', async () => {
+    const { service, prisma } = buildDeps();
+    prisma.pro.findUnique.mockResolvedValue({
+      id: 'p-rejected',
+      status: 'rejected',
+    });
+
+    await expect(
+      service.resolveCurrentIdentity({
+        id: 'p-rejected',
+        actorType: 'pro',
+      }),
+    ).resolves.toEqual({
+      id: 'p-rejected',
+      actorType: 'pro',
+      accessMode: 'full',
+    });
+  });
 });

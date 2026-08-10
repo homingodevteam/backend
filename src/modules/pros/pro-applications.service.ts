@@ -2,7 +2,6 @@ import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
 import type { ProApplication } from '../../prisma/client';
 import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AuditLogService } from '../identity/services/audit-log.service';
 import { ApplicationDecisionDto } from './dto/application-decision.dto';
 import { SubmitProApplicationDto } from './dto/submit-pro-application.dto';
 import { VerifyDocumentDto } from './dto/verify-document.dto';
@@ -13,7 +12,6 @@ export class ProApplicationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly prosService: ProsService,
-    private readonly auditLog: AuditLogService,
   ) {}
 
   listForPro(proId: string): Promise<ProApplication[]> {
@@ -27,8 +25,12 @@ export class ProApplicationsService {
     proId: string,
     dto: SubmitProApplicationDto,
   ): Promise<ProApplication> {
-    this.prosService.assertDigilockerNotSupported(dto.aadhaarSource);
-    this.prosService.assertDigilockerNotSupported(dto.panSource);
+    if (dto.aadhaarSource !== 'manual' || dto.panSource !== 'manual') {
+      throw apiError(
+        'Only manual KYC document uploads are supported',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
     if (dto.aadhaarSource === 'manual' && !dto.aadhaarUrl) {
       throw apiError(
@@ -43,29 +45,79 @@ export class ProApplicationsService {
       );
     }
 
-    const application = await this.prisma.proApplication.create({
-      data: {
-        proId,
+    return this.prisma.$transaction(async (tx) => {
+      // Serialise submissions for one Pro so two concurrent requests cannot
+      // create two queue entries. The partial unique index is the DB backstop.
+      // The lock function returns PostgreSQL `void`. `$queryRaw` attempts to
+      // deserialize that value and crashes; `$executeRaw` acquires the lock
+      // without expecting a result set.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${proId}, 0))`;
+
+      const pro = await tx.pro.findUnique({ where: { id: proId } });
+      if (!pro) throw new NotFoundException('Pro not found');
+      if (pro.status === 'approved' || pro.status === 'suspended') {
+        throw apiError(
+          'Approved KYC identity cannot be changed through self-service re-submission',
+          HttpStatus.CONFLICT,
+        );
+      }
+
+      const openApplication = await tx.proApplication.findFirst({
+        where: {
+          proId,
+          OR: [{ decision: null }, { decision: 'changes_requested' }],
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      const submittedAt = new Date();
+      const applicationData = {
         referredByType: dto.referredByType ?? 'none',
         referredById: dto.referredById ?? null,
-        submittedAt: new Date(),
+        submittedAt,
         queueStatus: 'pending',
+        documentFullName: dto.documentFullName.trim(),
+        documentDateOfBirth: new Date(dto.documentDateOfBirth),
+        documentGender: dto.documentGender,
         aadhaarSource: dto.aadhaarSource,
         aadhaarUrl: dto.aadhaarUrl ?? null,
         aadhaarNumberMasked: dto.aadhaarNumberMasked ?? null,
+        aadhaarStatus: 'pending',
+        aadhaarVerifiedByType: null,
+        aadhaarVerifiedByAdminId: null,
+        aadhaarVerifiedAt: null,
+        aadhaarRejectionReason: null,
         panSource: dto.panSource,
         panUrl: dto.panUrl ?? null,
         panNumberMasked: dto.panNumberMasked ?? null,
-      },
-    });
+        panStatus: 'pending',
+        panVerifiedByType: null,
+        panVerifiedByAdminId: null,
+        panVerifiedAt: null,
+        panRejectionReason: null,
+        reviewedByAdminId: null,
+        verificationCallAt: null,
+        decision: null,
+        decisionAt: null,
+        rejectionReason: null,
+      } as const;
 
-    // A fresh or re-application both mean "back under review".
-    await this.prisma.pro.update({
-      where: { id: proId },
-      data: { status: 'under_review' },
-    });
+      const application = openApplication
+        ? await tx.proApplication.update({
+            where: { id: openApplication.id },
+            data: applicationData,
+          })
+        : await tx.proApplication.create({
+            data: { ...applicationData, proId },
+          });
 
-    return application;
+      await tx.pro.update({
+        where: { id: proId },
+        data: { status: 'under_review' },
+      });
+
+      return application;
+    });
   }
 
   findAll(
@@ -95,7 +147,6 @@ export class ProApplicationsService {
     id: string,
     dto: VerifyDocumentDto,
     actingAdminId: string,
-    ipAddress: string | null,
   ): Promise<ProApplication> {
     const application = await this.getOrThrow(id);
 
@@ -106,17 +157,13 @@ export class ProApplicationsService {
       );
     }
 
-    const before =
-      dto.docType === 'aadhaar'
-        ? { aadhaarStatus: application.aadhaarStatus }
-        : { panStatus: application.panStatus };
-
     const updated = await this.prisma.proApplication.update({
       where: { id },
       data:
         dto.docType === 'aadhaar'
           ? {
               aadhaarStatus: dto.decision,
+              aadhaarVerifiedByType: 'admin',
               aadhaarVerifiedByAdminId: actingAdminId,
               aadhaarVerifiedAt: new Date(),
               aadhaarRejectionReason:
@@ -128,6 +175,7 @@ export class ProApplicationsService {
             }
           : {
               panStatus: dto.decision,
+              panVerifiedByType: 'admin',
               panVerifiedByAdminId: actingAdminId,
               panVerifiedAt: new Date(),
               panRejectionReason:
@@ -139,27 +187,10 @@ export class ProApplicationsService {
             },
     });
 
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: `pro.application.${dto.docType}.${dto.decision}`,
-      entityType: 'ProApplication',
-      entityId: id,
-      before,
-      after:
-        dto.docType === 'aadhaar'
-          ? { aadhaarStatus: updated.aadhaarStatus }
-          : { panStatus: updated.panStatus },
-      ipAddress,
-    });
-
     return updated;
   }
 
-  async logCall(
-    id: string,
-    actingAdminId: string,
-    ipAddress: string | null,
-  ): Promise<ProApplication> {
+  async logCall(id: string, actingAdminId: string): Promise<ProApplication> {
     const application = await this.getOrThrow(id);
     const nextQueueStatus =
       application.queueStatus !== 'approved' &&
@@ -175,15 +206,6 @@ export class ProApplicationsService {
         queueStatus: nextQueueStatus,
       },
     });
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: 'pro.application.call.log',
-      entityType: 'ProApplication',
-      entityId: id,
-      before: { verificationCallAt: application.verificationCallAt },
-      after: { verificationCallAt: updated.verificationCallAt },
-      ipAddress,
-    });
     return updated;
   }
 
@@ -191,9 +213,18 @@ export class ProApplicationsService {
     id: string,
     dto: ApplicationDecisionDto,
     actingAdminId: string,
-    ipAddress: string | null,
   ): Promise<ProApplication> {
     const application = await this.getOrThrow(id);
+
+    if (
+      application.decision === 'approved' ||
+      application.decision === 'rejected'
+    ) {
+      throw apiError(
+        'A final application decision cannot be changed',
+        HttpStatus.CONFLICT,
+      );
+    }
 
     if (dto.decision === 'approved') {
       if (
@@ -205,35 +236,53 @@ export class ProApplicationsService {
           HttpStatus.CONFLICT,
         );
       }
-    } else if (!dto.reason) {
+      if (
+        !application.documentFullName ||
+        !application.documentDateOfBirth ||
+        !application.documentGender
+      ) {
+        throw apiError(
+          'Document legal name, date of birth, and gender are required before approval',
+          HttpStatus.CONFLICT,
+        );
+      }
+    } else if (!dto.reason?.trim()) {
       throw apiError(
-        'reason is required when rejecting an application',
+        'reason is required when rejecting or requesting changes',
         HttpStatus.BAD_REQUEST,
       );
     }
 
-    const updated = await this.prisma.proApplication.update({
-      where: { id },
-      data: {
-        decision: dto.decision,
-        decisionAt: new Date(),
-        rejectionReason:
-          dto.decision === 'rejected' ? (dto.reason ?? null) : null,
-        queueStatus: dto.decision,
-        reviewedByAdminId: actingAdminId,
-      },
-    });
-
     const pro = await this.prisma.pro.findUnique({
       where: { id: application.proId },
     });
-    if (pro) {
+    if (!pro) throw new NotFoundException('Pro not found');
+
+    const employeeCode =
+      dto.decision === 'approved'
+        ? (pro.employeeCode ?? (await this.prosService.generateEmployeeCode()))
+        : pro.employeeCode;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const decided = await tx.proApplication.update({
+        where: { id },
+        data: {
+          decision: dto.decision,
+          decisionAt: new Date(),
+          rejectionReason:
+            dto.decision === 'approved' ? null : dto.reason!.trim(),
+          queueStatus: dto.decision,
+          reviewedByAdminId: actingAdminId,
+        },
+      });
+
       if (dto.decision === 'approved') {
-        const employeeCode =
-          pro.employeeCode ?? (await this.prosService.generateEmployeeCode());
-        await this.prisma.pro.update({
+        await tx.pro.update({
           where: { id: pro.id },
           data: {
+            fullName: application.documentFullName,
+            dateOfBirth: application.documentDateOfBirth,
+            gender: application.documentGender,
             status: 'approved',
             approvedApplicationId: application.id,
             approvedAt: new Date(),
@@ -241,20 +290,18 @@ export class ProApplicationsService {
           },
         });
       } else {
-        await this.prisma.pro.update({
+        await tx.pro.update({
           where: { id: pro.id },
-          data: { status: 'rejected' },
+          data: {
+            status:
+              dto.decision === 'changes_requested'
+                ? 'under_review'
+                : 'rejected',
+          },
         });
       }
-    }
 
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: `pro.application.${dto.decision}`,
-      entityType: 'ProApplication',
-      entityId: id,
-      after: { decision: updated.decision },
-      ipAddress,
+      return decided;
     });
 
     return updated;

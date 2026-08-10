@@ -28,10 +28,11 @@ model City {
   name     String
   state    String
   timezone String
-  isActive Boolean  @default(true)
+  isActive Boolean @default(true)
 
-  addresses CustomerAddress[]
-  pros      Pro[]
+  addresses        CustomerAddress[]
+  pros             Pro[]
+  platformSettings PlatformSetting[]
 
   @@index([isActive])
   @@map("cities")
@@ -61,9 +62,9 @@ model AdminUser {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  phone String @unique
+  phone    String  @unique
   fullName String
-  email String?
+  email    String?
 
   roleId String @db.Uuid
   role   Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
@@ -72,34 +73,19 @@ model AdminUser {
   cityScopeJson Json @default("[]")
 
   pushToken          String?
-  pushPlatform        String?
+  pushPlatform       String?
   pushTokenUpdatedAt DateTime?
 
   isActive    Boolean   @default(true)
   lastLoginAt DateTime?
 
+  aadhaarDocumentVerifications ProApplication[]   @relation("AadhaarDocumentVerifier")
+  panDocumentVerifications     ProApplication[]   @relation("PanDocumentVerifier")
+  platformSettingsUpdated      PlatformSetting[]
+  overriddenBookings           Booking[]          @relation("BookingOverrideAdmin")
+  approvedCommissionPayouts    CommissionPayout[] @relation("PayoutApprover")
+
   @@map("admin_users")
-}
-
-/// Append-only: never updated, never deleted. Every admin-mutating endpoint
-/// writes one row here via AuditLogService.
-model AdminAuditLog {
-  id        String   @id @default(uuid()) @db.Uuid
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  adminUserId String @db.Uuid
-  action      String
-  entityType  String
-  entityId    String
-  beforeJson  Json?
-  afterJson   Json?
-  ipAddress   String?
-
-  @@index([adminUserId])
-  @@index([entityType])
-  @@index([entityId])
-  @@map("admin_audit_logs")
 }
 
 // =====================================================================
@@ -133,6 +119,8 @@ model Customer {
   isBlocked        Boolean @default(false)
 
   addresses CustomerAddress[]
+  bookings  Booking[]
+  reviews   Review[]
 
   @@index([status, createdAt])
   @@map("customers")
@@ -163,6 +151,8 @@ model CustomerAddress {
 
   isDefault Boolean @default(false)
 
+  bookings Booking[]
+
   @@index([customerId])
   @@index([cityId])
   @@map("customer_addresses")
@@ -179,12 +169,27 @@ model Pro {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  phone    String  @unique
-  fullName String?
-  email    String?
+  phone String @unique
+
+  /// Legal identity copied from the approved KYC application. Pro
+  /// self-service endpoints never write these fields.
+  fullName    String?
+  dateOfBirth DateTime? @db.Date
+  gender      String?
+
+  profilePhotoUrl String?
+  email           String?
+  languages       Json    @default("[]")
+
+  emergencyContactName     String?
+  emergencyContactPhone    String?
+  emergencyContactRelation String?
+
+  /// Human-readable home-base address. Coordinates remain authoritative.
+  addressLine String?
 
   /// Payroll identity — payroll itself is external to this system.
-  employeeCode String? @unique
+  employeeCode    String?   @unique
   /// Bookkeeping only — this system never pays salary, only commission.
   monthlySalary   Decimal?  @db.Decimal(12, 2)
   salaryUpdatedAt DateTime?
@@ -195,7 +200,7 @@ model Pro {
   approvedApplication   ProApplication? @relation("ApprovedApplication", fields: [approvedApplicationId], references: [id], onDelete: SetNull)
 
   /// GATE: on/off duty. Set only by an admin, never by the Pro.
-  isAvailable            Boolean   @default(false)
+  isAvailable           Boolean   @default(false)
   availabilityUpdatedAt DateTime?
 
   pushToken          String?
@@ -206,8 +211,8 @@ model Pro {
   homeBaseLng Float?
 
   /// Cold fallback only — live position lives in Redis GEO (Geo & Routing).
-  lastKnownLat  Float?
-  lastKnownLng  Float?
+  lastKnownLat   Float?
+  lastKnownLng   Float?
   lastLocationAt DateTime?
 
   cityId String? @db.Uuid
@@ -215,21 +220,26 @@ model Pro {
 
   // Exact integer counters, rebuilt nightly once Reviews/Dispatch exist.
   // Nothing in this pass writes them — declared for column shape only.
-  ratingSum               Int      @default(0)
-  ratingCount             Int      @default(0)
-  assignmentsOffered      Int      @default(0)
-  assignmentsAcknowledged Int      @default(0)
+  ratingSum               Int       @default(0)
+  ratingCount             Int       @default(0)
+  assignmentsOffered      Int       @default(0)
+  assignmentsAcknowledged Int       @default(0)
   /// Analytics only — never a ranking or pay input.
   acceptanceRate          Float?
-  completedJobs           Int      @default(0)
+  completedJobs           Int       @default(0)
   countersRebuiltAt       DateTime?
 
   /// Employment start date.
   approvedAt DateTime?
 
-  applications ProApplication[] @relation("ProApplications")
-  services     ProService[]
-  bankAccounts ProBankAccount[]
+  applications         ProApplication[]      @relation("ProApplications")
+  services             ProService[]
+  bankAccounts         ProBankAccount[]
+  bookings             Booking[]
+  assignmentCandidates AssignmentCandidate[]
+  reviews              Review[]
+  commissions          BookingCommission[]
+  payouts              CommissionPayout[]
 
   @@index([status])
   @@index([isAvailable])
@@ -254,40 +264,49 @@ model ProApplication {
   submittedAt DateTime?
   queueStatus String    @default("pending")
 
+  /// Legal identity captured from this specific KYC attempt. A rejected Pro
+  /// may submit corrected values in the next application; approval copies
+  /// this snapshot to Pro and locks it from Pro self-service edits.
+  documentFullName    String?
+  documentDateOfBirth DateTime? @db.Date
+  documentGender      String?
+
   // Aadhaar — independently sourced and verified from PAN.
-  aadhaarSource           String?
-  aadhaarUrl              String?
-  aadhaarNumberMasked     String?
-  aadhaarStatus           String  @default("pending")
-  /// 'system' when DigiLocker auto-verified — never left null on verify.
-  aadhaarVerifiedByAdminId String?
-  aadhaarVerifiedAt       DateTime?
-  aadhaarRejectionReason  String?
+  aadhaarSource            String?
+  aadhaarUrl               String?
+  aadhaarNumberMasked      String?
+  aadhaarStatus            String     @default("pending")
+  /// Actor is explicit: type=system has no admin id; type=admin requires one.
+  aadhaarVerifiedByType    String?
+  aadhaarVerifiedByAdminId String?    @db.Uuid
+  aadhaarVerifiedByAdmin   AdminUser? @relation("AadhaarDocumentVerifier", fields: [aadhaarVerifiedByAdminId], references: [id], onDelete: Restrict)
+  aadhaarVerifiedAt        DateTime?
+  aadhaarRejectionReason   String?
 
   // PAN — independent of aadhaarSource.
-  panSource           String?
-  panUrl              String?
-  panNumberMasked     String?
-  panStatus           String  @default("pending")
-  panVerifiedByAdminId String?
-  panVerifiedAt       DateTime?
-  panRejectionReason  String?
-
-  /// Consent/fetch reference; the token itself is discarded after the fetch.
-  digilockerRequestId String?
-  digilockerFetchedAt DateTime?
+  panSource            String?
+  panUrl               String?
+  panNumberMasked      String?
+  panStatus            String     @default("pending")
+  panVerifiedByType    String?
+  panVerifiedByAdminId String?    @db.Uuid
+  panVerifiedByAdmin   AdminUser? @relation("PanDocumentVerifier", fields: [panVerifiedByAdminId], references: [id], onDelete: Restrict)
+  panVerifiedAt        DateTime?
+  panRejectionReason   String?
 
   reviewedByAdminId  String?
   verificationCallAt DateTime?
 
-  decision       String?
-  decisionAt     DateTime?
+  decision        String?
+  decisionAt      DateTime?
   rejectionReason String?
 
   approvedByPro Pro? @relation("ApprovedApplication")
 
   @@index([proId])
   @@index([queueStatus])
+  @@index([aadhaarVerifiedByAdminId])
+  @@index([panVerifiedByAdminId])
   @@map("pro_applications")
 }
 
@@ -304,10 +323,10 @@ model ProService {
 
   serviceId String
 
-  proficiency  String    @default("trainee")
+  proficiency String    @default("trainee")
   certifiedAt DateTime?
   /// Suspend one service without suspending the whole Pro.
-  isActive     Boolean   @default(true)
+  isActive    Boolean   @default(true)
 
   @@unique([proId, serviceId])
   @@index([proId])
@@ -331,6 +350,192 @@ model ProBankAccount {
   isPrimary  Boolean @default(false)
   isVerified Boolean @default(false)
 
+  payouts CommissionPayout[]
+
   @@index([proId])
   @@map("pro_bank_accounts")
+}
+
+// =====================================================================
+// 05-10 · MINIMUM SOURCE MODELS REQUIRED BY PRO LIFECYCLE & STANDING
+// =====================================================================
+
+model Booking {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookingNumber String          @unique
+  customerId    String          @db.Uuid
+  customer      Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  serviceId     String
+  addressId     String          @db.Uuid
+  address       CustomerAddress @relation(fields: [addressId], references: [id], onDelete: Restrict)
+
+  status String  @default("created")
+  proId  String? @db.Uuid
+  pro    Pro?    @relation(fields: [proId], references: [id], onDelete: Restrict)
+
+  assignmentAttempt Int       @default(0)
+  assignedAt        DateTime?
+  notifiedAt        DateTime?
+  ackDeadlineAt     DateTime?
+  acknowledgedAt    DateTime?
+  assignmentOutcome String?
+
+  overriddenByAdminId String?    @db.Uuid
+  overriddenByAdmin   AdminUser? @relation("BookingOverrideAdmin", fields: [overriddenByAdminId], references: [id], onDelete: SetNull)
+  overrideReason      String?
+
+  arrivedAt             DateTime?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  actualDurationMinutes Int?
+
+  assignmentCandidates AssignmentCandidate[]
+  statusEvents         BookingStatusEvent[]
+  review               Review?
+  commission           BookingCommission?
+
+  @@index([proId, status])
+  @@index([customerId, createdAt])
+  @@index([addressId, proId, completedAt])
+  @@map("bookings")
+}
+
+model AssignmentCandidate {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookingId      String   @db.Uuid
+  booking        Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  attemptNumber  Int
+  proId          String   @db.Uuid
+  pro            Pro      @relation(fields: [proId], references: [id], onDelete: Restrict)
+  isWinner       Boolean  @default(false)
+  ratingScore    Float?
+  offersToday    Int?
+  excludedReason String?
+  evaluatedAt    DateTime @default(now())
+
+  @@unique([bookingId, attemptNumber, proId])
+  @@index([proId, isWinner])
+  @@map("assignment_candidates")
+}
+
+model BookingStatusEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookingId  String   @db.Uuid
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  status     String
+  actorType  String
+  actorId    String
+  occurredAt DateTime @default(now())
+
+  @@index([bookingId, occurredAt])
+  @@index([actorType, actorId, status])
+  @@map("booking_status_events")
+}
+
+model Review {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookingId  String   @unique @db.Uuid
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  customerId String   @db.Uuid
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  proId      String   @db.Uuid
+  pro        Pro      @relation(fields: [proId], references: [id], onDelete: Restrict)
+
+  rating       Int
+  comment      String?
+  tags         Json    @default("[]")
+  isHidden     Boolean @default(false)
+  hiddenReason String?
+
+  @@index([proId, createdAt])
+  @@map("reviews")
+}
+
+model BookingCommission {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookingId String  @unique @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  proId     String  @db.Uuid
+  pro       Pro     @relation(fields: [proId], references: [id], onDelete: Restrict)
+
+  customerFlatAmount    Decimal  @db.Decimal(12, 2)
+  actualDurationMinutes Int?
+  commissionType        String
+  commissionValue       Decimal  @db.Decimal(12, 2)
+  commissionAmount      Decimal  @db.Decimal(12, 2)
+  platformAmount        Decimal  @db.Decimal(12, 2)
+  incentiveAmount       Decimal  @default(0) @db.Decimal(12, 2)
+  deductionAmount       Decimal  @default(0) @db.Decimal(12, 2)
+  netPayable            Decimal  @db.Decimal(12, 2)
+  status                String   @default("pending")
+  computedAt            DateTime @default(now())
+
+  payoutId String?           @db.Uuid
+  payout   CommissionPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@index([proId, computedAt])
+  @@index([payoutId])
+  @@map("booking_commissions")
+}
+
+model CommissionPayout {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId         String         @db.Uuid
+  pro           Pro            @relation(fields: [proId], references: [id], onDelete: Restrict)
+  bankAccountId String         @db.Uuid
+  bankAccount   ProBankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+
+  periodStart       DateTime   @db.Date
+  periodEnd         DateTime   @db.Date
+  commissionAmount  Decimal    @db.Decimal(12, 2)
+  incentiveAmount   Decimal    @default(0) @db.Decimal(12, 2)
+  deductionAmount   Decimal    @default(0) @db.Decimal(12, 2)
+  netAmount         Decimal    @db.Decimal(12, 2)
+  status            String     @default("draft")
+  approvedByAdminId String?    @db.Uuid
+  approvedByAdmin   AdminUser? @relation("PayoutApprover", fields: [approvedByAdminId], references: [id], onDelete: SetNull)
+  approvedAt        DateTime?
+  paidAt            DateTime?
+  payoutReference   String?
+
+  commissions BookingCommission[]
+
+  @@index([proId, periodEnd])
+  @@map("commission_payouts")
+}
+
+model PlatformSetting {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  key              String
+  cityId           String?    @db.Uuid
+  city             City?      @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  value            String
+  description      String?
+  updatedByAdminId String?    @db.Uuid
+  updatedByAdmin   AdminUser? @relation(fields: [updatedByAdminId], references: [id], onDelete: SetNull)
+
+  @@unique([key, cityId])
+  @@index([cityId, key])
+  @@map("platform_settings")
 }

@@ -16,7 +16,7 @@ const VIEW_URL_TTL_SECONDS = 5 * 60;
  * Generic presigned-URL helper — not KYC-specific. The client PUTs directly
  * to S3 with the URL from createUploadUrl(); the platform never proxies the
  * file bytes. Objects are private (no bucket ACL grants); every read goes
- * through createViewUrl(), which callers are expected to audit-log
+ * through createViewUrl(), which issues a short-lived signed URL
  * (KycDocumentsService does, for the one consumer that exists today).
  */
 @Injectable()

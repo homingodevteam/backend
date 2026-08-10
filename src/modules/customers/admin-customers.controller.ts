@@ -3,17 +3,13 @@ import {
   HttpStatus,
   Param,
   Patch,
-  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { FastifyRequest } from 'fastify';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import {
   ApiErrorEnvelope,
   ApiOkEnvelope,
 } from '../../common/swagger/api-envelope.decorator';
-import type { AuthenticatedUser } from '../../common/types/authenticated-user.type';
 import type { Customer } from '../../prisma/client';
 import { PermissionCode } from '../identity/constants/permission-code';
 import { RequirePermissions } from '../identity/decorators/require-permissions.decorator';
@@ -37,12 +33,8 @@ export class AdminCustomersController {
   @ApiOperation({ summary: 'Block a customer' })
   @ApiOkEnvelope(CustomerDto)
   @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.NOT_FOUND)
-  block(
-    @Param('id') id: string,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
-  ): Promise<Customer> {
-    return this.customersService.block(id, actor.id, request.ip ?? null);
+  block(@Param('id') id: string): Promise<Customer> {
+    return this.customersService.block(id);
   }
 
   @Patch(':id/unblock')
@@ -50,11 +42,7 @@ export class AdminCustomersController {
   @ApiOperation({ summary: 'Unblock a customer' })
   @ApiOkEnvelope(CustomerDto)
   @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.NOT_FOUND)
-  unblock(
-    @Param('id') id: string,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
-  ): Promise<Customer> {
-    return this.customersService.unblock(id, actor.id, request.ip ?? null);
+  unblock(@Param('id') id: string): Promise<Customer> {
+    return this.customersService.unblock(id);
   }
 }

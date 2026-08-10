@@ -120,4 +120,8 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     await this.client.geoadd(key, longitude, latitude, member);
   }
+
+  async geoRemove(key: string, member: string): Promise<void> {
+    await this.client.zrem(key, member);
+  }
 }

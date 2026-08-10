@@ -126,7 +126,7 @@ export class TokenService {
         where: { id: user.id },
         select: { id: true, status: true },
       });
-      if (!pro || pro.status === 'rejected') {
+      if (!pro) {
         throw new UnauthorizedException('This Pro account cannot sign in');
       }
       return {

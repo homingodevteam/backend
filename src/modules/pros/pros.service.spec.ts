@@ -11,19 +11,27 @@ function buildDeps() {
     city: {
       findUnique: jest.fn(),
     },
+    booking: {
+      findMany: jest.fn().mockResolvedValue([]),
+      update: jest.fn(),
+    },
+    bookingStatusEvent: { create: jest.fn() },
+    proService: { count: jest.fn() },
     $queryRaw: jest.fn(),
+    $transaction: jest.fn(),
   };
-  const redis = { geoAdd: jest.fn() };
-  const auditLog = { record: jest.fn() };
+  prisma.$transaction.mockImplementation((callback: (tx: unknown) => unknown) =>
+    callback(prisma),
+  );
+  const redis = { geoAdd: jest.fn(), geoRemove: jest.fn() };
 
-  return { prisma, redis, auditLog };
+  return { prisma, redis };
 }
 
 function buildService(deps: ReturnType<typeof buildDeps>): ProsService {
   return new ProsService(
     deps.prisma as never,
     deps.redis as never,
-    deps.auditLog as never,
     { revokeAllSessions: jest.fn() } as never,
   );
 }
@@ -50,15 +58,13 @@ describe('ProsService', () => {
       });
       const service = buildService(deps);
 
-      await expect(
-        service.suspend('p1', 'admin-1', null),
-      ).rejects.toMatchObject({
+      await expect(service.suspend('p1', {}, 'admin-1')).rejects.toMatchObject({
         response: expect.objectContaining({ statusCode: 409 }),
       });
       expect(deps.prisma.pro.update).not.toHaveBeenCalled();
     });
 
-    it('suspends an approved Pro and writes an audit log entry', async () => {
+    it('suspends an approved Pro', async () => {
       const deps = buildDeps();
       deps.prisma.pro.findUnique.mockResolvedValue({
         id: 'p1',
@@ -70,12 +76,26 @@ describe('ProsService', () => {
       });
       const service = buildService(deps);
 
-      const result = await service.suspend('p1', 'admin-1', '1.2.3.4');
+      const result = await service.suspend('p1', {}, 'admin-1');
 
       expect(result.status).toBe('suspended');
-      expect(deps.auditLog.record).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'pro.suspend', entityId: 'p1' }),
-      );
+    });
+
+    it('requires explicit handling when a live booking exists', async () => {
+      const deps = buildDeps();
+      deps.prisma.pro.findUnique.mockResolvedValue({
+        id: 'p1',
+        status: 'approved',
+      });
+      deps.prisma.booking.findMany.mockResolvedValue([
+        { id: 'b1', bookingNumber: 'HG-B1', status: 'arrived' },
+      ]);
+      const service = buildService(deps);
+
+      await expect(service.suspend('p1', {}, 'admin-1')).rejects.toMatchObject({
+        response: expect.objectContaining({ statusCode: 409 }),
+      });
+      expect(deps.prisma.pro.update).not.toHaveBeenCalled();
     });
   });
 
@@ -88,9 +108,22 @@ describe('ProsService', () => {
       });
       const service = buildService(deps);
 
-      await expect(
-        service.reinstate('p1', 'admin-1', null),
-      ).rejects.toMatchObject({
+      await expect(service.reinstate('p1')).rejects.toMatchObject({
+        response: expect.objectContaining({ statusCode: 409 }),
+      });
+    });
+
+    it('requires active service and availability gates', async () => {
+      const deps = buildDeps();
+      deps.prisma.pro.findUnique.mockResolvedValue({
+        id: 'p1',
+        status: 'suspended',
+        isAvailable: false,
+      });
+      deps.prisma.proService.count.mockResolvedValue(0);
+      const service = buildService(deps);
+
+      await expect(service.reinstate('p1')).rejects.toMatchObject({
         response: expect.objectContaining({ statusCode: 409 }),
       });
     });
@@ -106,7 +139,7 @@ describe('ProsService', () => {
       deps.prisma.pro.update.mockResolvedValue({ id: 'p1', isAvailable: true });
       const service = buildService(deps);
 
-      await service.setAvailability('p1', true, 'admin-1', null);
+      await service.setAvailability('p1', true);
 
       expect(deps.prisma.pro.update).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -126,15 +159,9 @@ describe('ProsService', () => {
         .mockResolvedValueOnce({ id: 'p2', isAvailable: true });
       const service = buildService(deps);
 
-      const results = await service.bulkSetAvailability(
-        ['p1', 'p2'],
-        true,
-        'admin-1',
-        null,
-      );
+      const results = await service.bulkSetAvailability(['p1', 'p2'], true);
 
       expect(results).toHaveLength(2);
-      expect(deps.auditLog.record).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -146,19 +173,14 @@ describe('ProsService', () => {
       const service = buildService(deps);
 
       await expect(
-        service.updateProfileByAdmin(
-          'p1',
-          { cityId: 'missing' },
-          'admin-1',
-          null,
-        ),
+        service.updateProfileByAdmin('p1', { cityId: 'missing' }),
       ).rejects.toMatchObject({
         response: expect.objectContaining({ statusCode: 400 }),
       });
       expect(deps.prisma.pro.update).not.toHaveBeenCalled();
     });
 
-    it('updates city and salary together and audit-logs both', async () => {
+    it('updates city and salary together', async () => {
       const deps = buildDeps();
       deps.prisma.pro.findUnique.mockResolvedValue({
         id: 'p1',
@@ -176,12 +198,10 @@ describe('ProsService', () => {
       });
       const service = buildService(deps);
 
-      const result = await service.updateProfileByAdmin(
-        'p1',
-        { cityId: 'city-1', monthlySalary: 25000 },
-        'admin-1',
-        null,
-      );
+      const result = await service.updateProfileByAdmin('p1', {
+        cityId: 'city-1',
+        monthlySalary: 25000,
+      });
 
       expect(result.cityId).toBe('city-1');
       expect(deps.prisma.pro.update).toHaveBeenCalledWith(
@@ -198,6 +218,11 @@ describe('ProsService', () => {
   describe('ingestLocation', () => {
     it('writes to the Redis GEO index and cold-flushes Postgres', async () => {
       const deps = buildDeps();
+      deps.prisma.pro.findUnique.mockResolvedValue({
+        id: 'p1',
+        status: 'approved',
+        isAvailable: true,
+      });
       const service = buildService(deps);
 
       await service.ingestLocation('p1', { lat: 12.9, lng: 77.6 });

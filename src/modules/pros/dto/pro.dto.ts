@@ -11,8 +11,35 @@ export class ProDto {
   @ApiPropertyOptional({ nullable: true })
   fullName: string | null;
 
+  @ApiPropertyOptional({ nullable: true, format: 'date' })
+  dateOfBirth: Date | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    enum: ['male', 'female', 'transgender'],
+  })
+  gender: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  profilePhotoUrl: string | null;
+
   @ApiPropertyOptional({ nullable: true })
   email: string | null;
+
+  @ApiProperty({ type: [String] })
+  languages: string[];
+
+  @ApiPropertyOptional({ nullable: true })
+  emergencyContactName: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  emergencyContactPhone: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  emergencyContactRelation: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  addressLine: string | null;
 
   @ApiPropertyOptional({ nullable: true })
   employeeCode: string | null;

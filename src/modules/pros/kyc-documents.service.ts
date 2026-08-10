@@ -2,21 +2,18 @@ import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
 import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
 import { S3Service } from '../../storage/s3.service';
-import { AuditLogService } from '../identity/services/audit-log.service';
 import { RequestKycUploadUrlDto } from './dto/request-kyc-upload-url.dto';
 
 /**
- * Thin wrapper over S3Service that fixes the key prefix and — for reads —
- * enforces the "every view is audit-logged" rule from the KYC security
- * notes. The client PUTs the file directly to S3 with the URL this
- * returns; the platform never sees the bytes.
+ * Thin wrapper over S3Service that fixes the KYC key prefix. The client PUTs
+ * the file directly to S3 with the URL this returns; the platform never sees
+ * the bytes.
  */
 @Injectable()
 export class KycDocumentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly s3: S3Service,
-    private readonly auditLog: AuditLogService,
   ) {}
 
   requestUploadUrl(
@@ -32,8 +29,6 @@ export class KycDocumentsService {
   async requestViewUrl(
     applicationId: string,
     docType: string,
-    actingAdminId: string,
-    ipAddress: string | null,
   ): Promise<{ viewUrl: string; expiresIn: number }> {
     if (docType !== 'aadhaar' && docType !== 'pan') {
       throw apiError(
@@ -56,16 +51,6 @@ export class KycDocumentsService {
       );
     }
 
-    const result = await this.s3.createViewUrl(key);
-
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: `pro.application.${docType}.view`,
-      entityType: 'ProApplication',
-      entityId: applicationId,
-      ipAddress,
-    });
-
-    return result;
+    return this.s3.createViewUrl(key);
   }
 }

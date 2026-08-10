@@ -4,14 +4,12 @@ import { apiError } from '../../../common/utils';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { CreateAdminUserDto } from '../dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from '../dto/update-admin-user.dto';
-import { AuditLogService } from './audit-log.service';
 import { TokenService } from './token.service';
 
 @Injectable()
 export class AdminUsersService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly auditLog: AuditLogService,
     private readonly tokenService: TokenService,
   ) {}
 
@@ -19,11 +17,7 @@ export class AdminUsersService {
     return this.prisma.adminUser.findMany({ orderBy: { createdAt: 'desc' } });
   }
 
-  async create(
-    dto: CreateAdminUserDto,
-    actingAdminId: string,
-    ipAddress: string | null,
-  ): Promise<AdminUser> {
+  async create(dto: CreateAdminUserDto): Promise<AdminUser> {
     const role = await this.prisma.role.findUnique({
       where: { id: dto.roleId },
     });
@@ -39,7 +33,7 @@ export class AdminUsersService {
       );
     }
 
-    const created = await this.prisma.adminUser.create({
+    return this.prisma.adminUser.create({
       data: {
         phone: dto.phone,
         fullName: dto.fullName,
@@ -48,25 +42,9 @@ export class AdminUsersService {
         cityScopeJson: dto.cityScopeJson ?? [],
       },
     });
-
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: 'identity.adminUser.create',
-      entityType: 'AdminUser',
-      entityId: created.id,
-      after: { ...created },
-      ipAddress,
-    });
-
-    return created;
   }
 
-  async update(
-    id: string,
-    dto: UpdateAdminUserDto,
-    actingAdminId: string,
-    ipAddress: string | null,
-  ): Promise<AdminUser> {
+  async update(id: string, dto: UpdateAdminUserDto): Promise<AdminUser> {
     const admin = await this.prisma.adminUser.findUnique({ where: { id } });
     if (!admin) throw new NotFoundException('Admin user not found');
 
@@ -87,16 +65,6 @@ export class AdminUsersService {
         cityScopeJson: dto.cityScopeJson,
         isActive: dto.isActive,
       },
-    });
-
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: 'identity.adminUser.update',
-      entityType: 'AdminUser',
-      entityId: updated.id,
-      before: { ...admin },
-      after: { ...updated },
-      ipAddress,
     });
 
     if (dto.isActive === false) {

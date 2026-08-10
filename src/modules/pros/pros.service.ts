@@ -1,27 +1,28 @@
 import {
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
-  NotImplementedException,
 } from '@nestjs/common';
 import type { Pro, Prisma } from '../../prisma/client';
 import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
-import { AuditLogService } from '../identity/services/audit-log.service';
 import { TokenService } from '../identity/services/token.service';
 import { AdminUpdateProProfileDto } from './dto/admin-update-pro-profile.dto';
 import { IngestLocationDto } from './dto/ingest-location.dto';
+import { SuspendProDto } from './dto/suspend-pro.dto';
 import { UpdateProDto } from './dto/update-pro.dto';
 
 const PRO_LIVE_GEO_KEY = 'pros:live';
 
 @Injectable()
 export class ProsService {
+  private readonly logger = new Logger(ProsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
-    private readonly auditLog: AuditLogService,
     private readonly tokenService: TokenService,
   ) {}
 
@@ -44,10 +45,8 @@ export class ProsService {
   async updateProfileByAdmin(
     id: string,
     dto: AdminUpdateProProfileDto,
-    actingAdminId: string,
-    ipAddress: string | null,
   ): Promise<Pro> {
-    const before = await this.getById(id);
+    await this.getById(id);
 
     if (dto.cityId) {
       const city = await this.prisma.city.findUnique({
@@ -67,16 +66,6 @@ export class ProsService {
       },
     });
 
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: 'pro.profile.update',
-      entityType: 'Pro',
-      entityId: id,
-      before: { cityId: before.cityId, monthlySalary: before.monthlySalary },
-      after: { cityId: updated.cityId, monthlySalary: updated.monthlySalary },
-      ipAddress,
-    });
-
     return updated;
   }
 
@@ -86,6 +75,13 @@ export class ProsService {
    * of "periodic cold flush" until a real background job exists.
    */
   async ingestLocation(id: string, dto: IngestLocationDto): Promise<void> {
+    const pro = await this.getById(id);
+    if (pro.status !== 'approved' || !pro.isAvailable) {
+      throw apiError(
+        'Live location is accepted only while the Pro is approved and on duty',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     await this.redis.geoAdd(PRO_LIVE_GEO_KEY, dto.lng, dto.lat, id);
     await this.prisma.pro.update({
       where: { id },
@@ -120,27 +116,12 @@ export class ProsService {
     return this.prisma.pro.findMany({ where, orderBy: { createdAt: 'desc' } });
   }
 
-  async setAvailability(
-    id: string,
-    isAvailable: boolean,
-    actingAdminId: string,
-    ipAddress: string | null,
-  ): Promise<Pro> {
-    const before = await this.getById(id);
+  async setAvailability(id: string, isAvailable: boolean): Promise<Pro> {
+    await this.getById(id);
 
     const updated = await this.prisma.pro.update({
       where: { id },
       data: { isAvailable, availabilityUpdatedAt: new Date() },
-    });
-
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: 'pro.availability.set',
-      entityType: 'Pro',
-      entityId: id,
-      before: { isAvailable: before.isAvailable },
-      after: { isAvailable: updated.isAvailable },
-      ipAddress,
     });
 
     return updated;
@@ -149,22 +130,18 @@ export class ProsService {
   async bulkSetAvailability(
     proIds: string[],
     isAvailable: boolean,
-    actingAdminId: string,
-    ipAddress: string | null,
   ): Promise<Pro[]> {
     const results: Pro[] = [];
     for (const id of proIds) {
-      results.push(
-        await this.setAvailability(id, isAvailable, actingAdminId, ipAddress),
-      );
+      results.push(await this.setAvailability(id, isAvailable));
     }
     return results;
   }
 
   async suspend(
     id: string,
+    dto: SuspendProDto,
     actingAdminId: string,
-    ipAddress: string | null,
   ): Promise<Pro> {
     const pro = await this.getById(id);
     if (pro.status !== 'approved') {
@@ -174,30 +151,85 @@ export class ProsService {
       );
     }
 
-    const updated = await this.prisma.pro.update({
-      where: { id },
-      data: { status: 'suspended' },
+    const liveBookings = await this.prisma.booking.findMany({
+      where: {
+        proId: id,
+        status: { in: ['assigned', 'en_route', 'arrived', 'started'] },
+      },
+      select: { id: true, bookingNumber: true, status: true },
     });
 
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: 'pro.suspend',
-      entityType: 'Pro',
-      entityId: id,
-      before: { status: pro.status },
-      after: { status: updated.status },
-      ipAddress,
+    if (liveBookings.length > 0 && !dto.confirmLiveBookingHandling) {
+      throw apiError(
+        'This Pro has live bookings that require an explicit ops decision',
+        HttpStatus.CONFLICT,
+        liveBookings.map((booking) => ({
+          field: 'confirmLiveBookingHandling',
+          code: 'LIVE_BOOKING_REQUIRES_RESOLUTION',
+          message: `${booking.bookingNumber} is ${booking.status}`,
+        })),
+      );
+    }
+    if (liveBookings.length > 0 && !dto.reason?.trim()) {
+      throw apiError(
+        'reason is required when handling live bookings during suspension',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      for (const booking of liveBookings) {
+        const reassign =
+          booking.status === 'assigned' || booking.status === 'en_route';
+        await tx.booking.update({
+          where: { id: booking.id },
+          data: reassign
+            ? {
+                status: 'assigning',
+                proId: null,
+                assignmentOutcome: 'ops_reassigned',
+                overriddenByAdminId: actingAdminId,
+                overrideReason: dto.reason!.trim(),
+              }
+            : {
+                overriddenByAdminId: actingAdminId,
+                overrideReason: dto.reason!.trim(),
+              },
+        });
+        await tx.bookingStatusEvent.create({
+          data: {
+            bookingId: booking.id,
+            status: reassign ? 'assigning' : booking.status,
+            actorType: 'ops',
+            actorId: actingAdminId,
+          },
+        });
+      }
+
+      return tx.pro.update({
+        where: { id },
+        data: {
+          status: 'suspended',
+          isAvailable: false,
+          availabilityUpdatedAt: new Date(),
+        },
+      });
     });
+
+    try {
+      await this.redis.geoRemove(PRO_LIVE_GEO_KEY, id);
+    } catch (error) {
+      this.logger.warn(
+        `Could not remove suspended Pro ${id} from Redis GEO: ${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+    }
+
     await this.tokenService.revokeAllSessions('pro', id);
 
     return updated;
   }
 
-  async reinstate(
-    id: string,
-    actingAdminId: string,
-    ipAddress: string | null,
-  ): Promise<Pro> {
+  async reinstate(id: string): Promise<Pro> {
     const pro = await this.getById(id);
     if (pro.status !== 'suspended') {
       throw apiError(
@@ -206,22 +238,41 @@ export class ProsService {
       );
     }
 
-    const updated = await this.prisma.pro.update({
+    const activeServiceCount = await this.prisma.proService.count({
+      where: { proId: id, isActive: true },
+    });
+    const blockers = [
+      ...(activeServiceCount === 0
+        ? [
+            {
+              field: 'activeServiceGate',
+              code: 'NO_ACTIVE_SERVICE',
+              message: 'At least one active ProService is required',
+            },
+          ]
+        : []),
+      ...(!pro.isAvailable
+        ? [
+            {
+              field: 'availabilityGate',
+              code: 'PRO_NOT_AVAILABLE',
+              message: 'The Pro must be switched on before reinstatement',
+            },
+          ]
+        : []),
+    ];
+    if (blockers.length > 0) {
+      throw apiError(
+        'All dispatchability gates must pass before reinstatement',
+        HttpStatus.CONFLICT,
+        blockers,
+      );
+    }
+
+    return this.prisma.pro.update({
       where: { id },
       data: { status: 'approved' },
     });
-
-    await this.auditLog.record({
-      adminUserId: actingAdminId,
-      action: 'pro.reinstate',
-      entityType: 'Pro',
-      entityId: id,
-      before: { status: pro.status },
-      after: { status: updated.status },
-      ipAddress,
-    });
-
-    return updated;
   }
 
   /**
@@ -234,13 +285,5 @@ export class ProsService {
       SELECT nextval('pro_employee_code_seq') AS nextval
     `;
     return `HG-${rows[0].nextval.toString().padStart(5, '0')}`;
-  }
-
-  assertDigilockerNotSupported(source: string): void {
-    if (source === 'digilocker') {
-      throw new NotImplementedException(
-        'DigiLocker integration is not wired up yet — submit this document with source: manual',
-      );
-    }
   }
 }

@@ -1,16 +1,33 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsOptional, IsString } from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class UpdateCustomerDto {
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ nullable: true })
   @IsOptional()
   @IsString()
-  fullName?: string;
+  @MinLength(2)
+  @MaxLength(100)
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  fullName?: string | null;
 
   @ApiPropertyOptional({
-    description: 'Invoice delivery only — never a login credential',
+    nullable: true,
+    description: 'Invoice delivery only - never a login credential',
   })
   @IsOptional()
   @IsEmail()
-  email?: string;
+  @MaxLength(254)
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  email?: string | null;
 }

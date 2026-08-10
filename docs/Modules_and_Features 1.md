@@ -10,28 +10,28 @@
 
 These supersede the PDF wherever they conflict. Every module below is written against them.
 
-| Area | Ruling |
-|---|---|
-| **Auth** | Phone + OTP only, for all three user types. No email/password, no Google sign-in. OTP send and verify are handled by a third party (Synquic Slide / MSG91) — no OTP table exists. |
-| **Dispatch** | The system assigns. A Pro **cannot accept or decline**. The only Pro action is **acknowledge**. Missing the ack window closes that attempt and the engine assigns the next-best candidate. |
-| **Employment** | Pros are salaried employees. Salary is a recorded number for reference only — no salary cycle, no salary payout, no salary ledger entries. **Commission is the only Pro money this system computes.** |
-| **Availability** | No roster. `Pro.isAvailable` is a straight on/off-duty flag **set by an admin, not by the Pro**; free windows derive from that Pro's committed bookings. |
-| **Skill matching** | `ProService(proId, serviceId)` is the single source of truth. A Service is the unit of competency; there is no separate skill code. |
-| **KYC** | Aadhaar + PAN only, held as columns on the application. Each is verified independently, and each records its own `source` — **`digilocker`** (issuer-signed, auto-verifiable) or **`manual`** (photographed, needs a human). Both paths stay open. |
-| **Ratings** | **Two-way.** `Review.reviewerType` is `customer` or `pro`; the unique constraint is `(bookingId, reviewerType)`. Customer→Pro ratings drive dispatch. **Pro→customer ratings drive nothing automatically** — they surface to ops and to the next Pro sent there, and are never shown to the customer. |
-| **Pricing** | One flat price per service, nationally. No per-city price table. |
-| **Geography** | City-level only. No micromarkets or zones. |
-| **Payments** | Razorpay for online. Instruments (cards, VPAs) stay at the gateway — the platform stores only references. |
-| **Cash** | **Pay-after-service in cash is supported**, where `Service.allowsCash` and the city allow it. A cash booking has **no `Order` row**, skips `awaiting_payment`, and dispatches before any money moves. The Pro collects at the door and **hands the money back in full**; `Pro.cashInHand` tracks what they carry until a confirmed handover clears it. |
-| **Cash vs commission** | **Never netted.** Commission is computed and paid identically in both modes — payment mode is not an input to pay. Cash-in-hand is a debt the Pro owes the platform, settled by handover; commission is a debt the platform owes the Pro, settled by payout. `CommissionPayout` has no cash field. |
-| **Live state** | Pro GPS, booking ETA, dispatch locks, free-slot windows and the rotation lookup live in Redis, never in tables. |
-| **Payment detail** | **No `Payment` table.** Attempt-level detail — every try, its failure code, the method used — lives at Razorpay and is looked up in **their dashboard** by `razorpayOrderId`. The admin console does not surface it. `Order` stores only what must be joined or reconciled on, plus refund state. |
-| **Assignment** | **No `Assignment` table.** The live attempt lives on `Booking` (`proId`, `assignmentAttempt`, `ackDeadlineAt`, `assignmentOutcome`). Superseded attempts survive only in `AssignmentCandidate` and `BookingStatusEvent`. |
-| **Commission rate** | **One rate per Service** (`commissionType`, `commissionValue`). No tiers, no duration bands, no per-city config. Duration no longer changes what a Pro earns. |
-| **Pro availability** | **No shift roster.** `Pro.isAvailable` is a straight on/off-duty flag, **toggled by an admin** and audited like any other admin action. Free windows derive from that Pro's committed bookings alone. |
-| **Pro standing** | **No quality audits.** Allocation is driven by **customer rating alone**, applied as a smoothed score so a Pro with few reviews is neither punished nor over-trusted. `acceptanceRate` is tracked for reporting and affects nothing. Quality concerns run through `SupportTicket` and are acted on via `ProService.isActive` or `Pro.status`. |
-| **Cold start** | A Pro with no reviews is ranked at the platform average via a Bayesian prior — `dispatch.ratingPriorMean` and `dispatch.ratingPriorWeight` in `PlatformSetting`. No grace flag, no expiry, no schema change. |
-| **Push tokens** | **No `DeviceToken` table.** `pushToken` / `pushPlatform` are columns on `Customer`, `Pro` and `AdminUser` — **one device per user**. A second login overwrites the first. |
+| Area                   | Ruling                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Auth**               | Phone + OTP only, for all three user types. No email/password, no Google sign-in. OTP send and verify are handled by a third party (Synquic Slide / MSG91) — no OTP table exists.                                                                                                                                                                      |
+| **Dispatch**           | The system assigns. A Pro **cannot accept or decline**. The only Pro action is **acknowledge**. Missing the ack window closes that attempt and the engine assigns the next-best candidate.                                                                                                                                                             |
+| **Employment**         | Pros are salaried employees. Salary is a recorded number for reference only — no salary cycle, no salary payout, no salary ledger entries. **Commission is the only Pro money this system computes.**                                                                                                                                                  |
+| **Availability**       | No roster. `Pro.isAvailable` is a straight on/off-duty flag **set by an admin, not by the Pro**; free windows derive from that Pro's committed bookings.                                                                                                                                                                                               |
+| **Skill matching**     | `ProService(proId, serviceId)` is the single source of truth. A Service is the unit of competency; there is no separate skill code.                                                                                                                                                                                                                    |
+| **KYC**                | Aadhaar + PAN only, held as columns on the application. The active development scope supports **manual S3 upload and human review only**. DigiLocker is deferred and is not accepted by the API.                                                                                                                                                       |
+| **Ratings**            | **Two-way.** `Review.reviewerType` is `customer` or `pro`; the unique constraint is `(bookingId, reviewerType)`. Customer→Pro ratings drive dispatch. **Pro→customer ratings drive nothing automatically** — they surface to ops and to the next Pro sent there, and are never shown to the customer.                                                  |
+| **Pricing**            | One flat price per service, nationally. No per-city price table.                                                                                                                                                                                                                                                                                       |
+| **Geography**          | City-level only. No micromarkets or zones.                                                                                                                                                                                                                                                                                                             |
+| **Payments**           | Razorpay for online. Instruments (cards, VPAs) stay at the gateway — the platform stores only references.                                                                                                                                                                                                                                              |
+| **Cash**               | **Pay-after-service in cash is supported**, where `Service.allowsCash` and the city allow it. A cash booking has **no `Order` row**, skips `awaiting_payment`, and dispatches before any money moves. The Pro collects at the door and **hands the money back in full**; `Pro.cashInHand` tracks what they carry until a confirmed handover clears it. |
+| **Cash vs commission** | **Never netted.** Commission is computed and paid identically in both modes — payment mode is not an input to pay. Cash-in-hand is a debt the Pro owes the platform, settled by handover; commission is a debt the platform owes the Pro, settled by payout. `CommissionPayout` has no cash field.                                                     |
+| **Live state**         | Pro GPS, booking ETA, dispatch locks, free-slot windows and the rotation lookup live in Redis, never in tables.                                                                                                                                                                                                                                        |
+| **Payment detail**     | **No `Payment` table.** Attempt-level detail — every try, its failure code, the method used — lives at Razorpay and is looked up in **their dashboard** by `razorpayOrderId`. The admin console does not surface it. `Order` stores only what must be joined or reconciled on, plus refund state.                                                      |
+| **Assignment**         | **No `Assignment` table.** The live attempt lives on `Booking` (`proId`, `assignmentAttempt`, `ackDeadlineAt`, `assignmentOutcome`). Superseded attempts survive only in `AssignmentCandidate` and `BookingStatusEvent`.                                                                                                                               |
+| **Commission rate**    | **One rate per Service** (`commissionType`, `commissionValue`). No tiers, no duration bands, no per-city config. Duration no longer changes what a Pro earns.                                                                                                                                                                                          |
+| **Pro availability**   | **No shift roster.** `Pro.isAvailable` is a straight on/off-duty flag, **toggled by an admin** and audited like any other admin action. Free windows derive from that Pro's committed bookings alone.                                                                                                                                                  |
+| **Pro standing**       | **No quality audits.** Allocation is driven by **customer rating alone**, applied as a smoothed score so a Pro with few reviews is neither punished nor over-trusted. `acceptanceRate` is tracked for reporting and affects nothing. Quality concerns run through `SupportTicket` and are acted on via `ProService.isActive` or `Pro.status`.          |
+| **Cold start**         | A Pro with no reviews is ranked at the platform average via a Bayesian prior — `dispatch.ratingPriorMean` and `dispatch.ratingPriorWeight` in `PlatformSetting`. No grace flag, no expiry, no schema change.                                                                                                                                           |
+| **Push tokens**        | **No `DeviceToken` table.** `pushToken` / `pushPlatform` are columns on `Customer`, `Pro` and `AdminUser` — **one device per user**. A second login overwrites the first.                                                                                                                                                                              |
 
 ---
 
@@ -39,23 +39,23 @@ These supersede the PDF wherever they conflict. Every module below is written ag
 
 **38 tables across 15 modules.**
 
-| # | Module | Owns | Primary consumer |
-|---|---|---|---|
-| 1 | Identity & Access | Role | All three apps |
-| 2 | Customer Profile | Customer, CustomerAddress | Customer App |
-| 3 | Service Catalog | ServiceCategory, Service, City | Customer App |
-| 4 | Booking & Job Lifecycle | Booking *(job + assignment + invoice)*, RecurringPlan, BookingStatusEvent, ChatMessage, JobPhotoProof | Customer + Pro Apps |
-| 5 | Dispatch Engine | AssignmentCandidate | Internal |
-| 6 | Pro Management | Pro, ProApplication, ProService, ProBankAccount | Pro App + Admin |
-| 7 | Payments | Order | Customer App |
-| 8 | Commission & Payouts | BookingCommission, CommissionPayout, Incentive, ProIncentiveProgress | Pro App + Admin |
-| 9 | Ledger & Reconciliation | LedgerEntry, ReconciliationRun, ReconciliationDiscrepancy | Admin (finance) |
-| 10 | Training & Reviews | TrainingModule, ProTrainingProgress, OfflineTrainingSession, OfflineTrainingAttendance, Review | Pro App + Admin |
-| 11 | Safety & Support | SosAlert, SupportTicket, TicketMessage | All three apps |
-| 12 | Notifications | NotificationLog | Internal |
-| 13 | Geo & Routing | *(none — Redis only)* | Internal |
-| 14 | Config & Server-Driven UI | PlatformSetting, UiConfig | All three apps |
-| 15 | Admin Console & Reporting | AdminJob, AdminAuditLog | Admin Panel |
+| #   | Module                    | Owns                                                                                                  | Primary consumer    |
+| --- | ------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------- |
+| 1   | Identity & Access         | Role                                                                                                  | All three apps      |
+| 2   | Customer Profile          | Customer, CustomerAddress                                                                             | Customer App        |
+| 3   | Service Catalog           | ServiceCategory, Service, City                                                                        | Customer App        |
+| 4   | Booking & Job Lifecycle   | Booking _(job + assignment + invoice)_, RecurringPlan, BookingStatusEvent, ChatMessage, JobPhotoProof | Customer + Pro Apps |
+| 5   | Dispatch Engine           | AssignmentCandidate                                                                                   | Internal            |
+| 6   | Pro Management            | Pro, ProApplication, ProService, ProBankAccount                                                       | Pro App + Admin     |
+| 7   | Payments                  | Order                                                                                                 | Customer App        |
+| 8   | Commission & Payouts      | BookingCommission, CommissionPayout, Incentive, ProIncentiveProgress                                  | Pro App + Admin     |
+| 9   | Ledger & Reconciliation   | LedgerEntry, ReconciliationRun, ReconciliationDiscrepancy                                             | Admin (finance)     |
+| 10  | Training & Reviews        | TrainingModule, ProTrainingProgress, OfflineTrainingSession, OfflineTrainingAttendance, Review        | Pro App + Admin     |
+| 11  | Safety & Support          | SosAlert, SupportTicket, TicketMessage                                                                | All three apps      |
+| 12  | Notifications             | NotificationLog                                                                                       | Internal            |
+| 13  | Geo & Routing             | _(none — Redis only)_                                                                                 | Internal            |
+| 14  | Config & Server-Driven UI | PlatformSetting, UiConfig                                                                             | All three apps      |
+| 15  | Admin Console & Reporting | AdminJob _(admin audit storage deferred)_                                                             | Admin Panel         |
 
 **Held elsewhere, deliberately:** payment attempts (Razorpay) · the assignment record (a `Booking` column) · commission rates (a `Service` column) · push tokens (columns on the three user tables) · Pro availability (a `Pro` column) · live GPS, ETA, dispatch locks, free windows and rotation (Redis).
 
@@ -128,7 +128,8 @@ The service job from request through completion. The largest module, and the spi
 
 **Features**
 
-*Creation*
+_Creation_
+
 1. Instant booking — book now, dispatch immediately
 2. Scheduled booking — pick a future slot from real Pro availability
 3. Recurring plans — daily / weekly / fortnightly / monthly, auto-generating future bookings
@@ -137,28 +138,13 @@ The service job from request through completion. The largest module, and the spi
 6. One-tap rebook of any past booking
 7. Human-readable booking number for support calls
 
-*Lifecycle*
-8. State machine: created → awaiting_payment → assigning → assigned → en_route → arrived → started → completed, with cancellation available throughout
-9. Append-only status event log capturing actor, timestamp and coordinates at every transition — the audit trail behind every dispute
-10. Repeat transitions preserved (arrived → en_route → arrived when a customer isn't home)
+_Lifecycle_ 8. State machine: created → awaiting_payment → assigning → assigned → en_route → arrived → started → completed, with cancellation available throughout 9. Append-only status event log capturing actor, timestamp and coordinates at every transition — the audit trail behind every dispute 10. Repeat transitions preserved (arrived → en_route → arrived when a customer isn't home)
 
-*Service-start OTP — the trust anchor*
-11. OTP issued to the customer when the Pro marks arrival
-12. Pro enters the code in the Pro App; verification via third party
-13. **Only a verified OTP sets `startedAt` and begins the job timer** — this is what prevents off-platform work and disputed start times
-14. Attempt counting and provider reference retained for audit
+_Service-start OTP — the trust anchor_ 11. OTP issued to the customer when the Pro marks arrival 12. Pro enters the code in the Pro App; verification via third party 13. **Only a verified OTP sets `startedAt` and begins the job timer** — this is what prevents off-platform work and disputed start times 14. Attempt counting and provider reference retained for audit
 
-*Execution*
-15. Live tracking view for the customer (position and ETA served from Redis)
-16. In-app chat between customer and assigned Pro, scoped to the booking
-17. Mandatory geo-stamped completion photo proof from the Pro
-18. Actual duration computed from verified start to completion — the number commission is calculated from
-19. Route trail written once at completion as a sampled polyline, for dispute evidence
+_Execution_ 15. Live tracking view for the customer (position and ETA served from Redis) 16. In-app chat between customer and assigned Pro, scoped to the booking 17. Mandatory geo-stamped completion photo proof from the Pro 18. Actual duration computed from verified start to completion — the number commission is calculated from 19. Route trail written once at completion as a sampled polyline, for dispute evidence
 
-*Close-out*
-20. Cancellation with reason, actor type and timestamp recorded — behaviour depends on which window it falls in, see **Cancellation & Refund Flow**
-21. Invoice generated on the booking — number, tax, PDF — showing only the flat price the customer agreed to
-22. Booking history and live-order views
+_Close-out_ 20. Cancellation with reason, actor type and timestamp recorded — behaviour depends on which window it falls in, see **Cancellation & Refund Flow** 21. Invoice generated on the booking — number, tax, PDF — showing only the flat price the customer agreed to 22. Booking history and live-order views
 
 **Depends on:** Dispatch, Payments, Geo & Routing, Notifications
 **External:** Third-party OTP provider
@@ -202,32 +188,20 @@ Recruiting, verifying and maintaining the workforce.
 
 **Features**
 
-*Onboarding*
+_Onboarding_
+
 1. In-app self-application, including referral attribution to an existing Pro or customer
-2. Aadhaar and PAN capture by **either route, chosen per document**:
-   - **DigiLocker** — OAuth consent, issuer-signed document fetched directly. `source = digilocker`, `digilockerRequestId` and fetch timestamp stored, and the document **auto-verifies** because nobody needs to assess a photograph of a card. Verifier recorded as `system`, never left null. Consent is per-fetch: pull once, keep the document, discard the token — no stored tokens for later re-fetch
-   - **Manual upload** — photograph to S3, `source = manual`, human review. **This path never goes away**: DigiLocker only works if the applicant already linked those documents there, and many won't have
-3. **Independent verification per document** — an admin can clear the Aadhaar and reject the PAN in one sitting, and tell the applicant exactly which to re-upload. Source and status are both per-document, so a DigiLocker Aadhaar and a photographed PAN coexist on one application
+2. Aadhaar and PAN capture through **manual S3 upload only**, with `source = manual` and mandatory human review. DigiLocker fields and upload flows are outside the current scope.
+3. **Independent verification per document** — an admin can clear the Aadhaar and reject the PAN in one sitting, and tell the applicant exactly which to re-upload.
 4. Admin onboarding queue with stages: pending → docs review → call pending → decision
 5. Verification call logging
 6. Approve / reject with reason
 7. Re-application supported — a rejected applicant reapplies as a new attempt; the earlier rejection and its documents are preserved
 8. Activation gate: only approved Pros become visible to the dispatch engine
 
-*Profile & capability*
-9. Pro profile with employee code and recorded monthly salary (reference only)
-10. Home base coordinate, set at onboarding, used for supply planning and as fallback dispatch origin
-11. **Service assignment** — which services this Pro may be dispatched for, with proficiency level
-12. Per-service suspension: a failed audit on electrical work doesn't stop them taking AC jobs
-13. Bank account details for commission disbursement
+_Profile & capability_ 9. Pro profile with employee code and recorded monthly salary (reference only) 10. Home base coordinate, set at onboarding, used for supply planning and as fallback dispatch origin 11. **Service assignment** — which services this Pro may be dispatched for, with proficiency level 12. Per-service suspension: a failed audit on electrical work doesn't stop them taking AC jobs 13. Bank account details for commission disbursement
 
-*Operations*
-14. **Availability toggle** — `isAvailable` is a straight on/off-duty flag, **set by an admin**. There is no roster; free windows come from committed bookings
-15. **Admin availability roster screen** — every approved Pro in a city with their flag, filterable, with bulk on/off. Without this, switching a workforce on each morning is a per-record chore
-16. Live location ingest into Redis GEO; periodic cold flush to the Pro record as a fallback
-17. Status lifecycle: applied → under_review → approved → suspended
-18. **Acceptance rate** — `assignmentsAcknowledged ÷ assignmentsOffered`, maintained as exact counters and rebuilt nightly. **Reporting only** — it does not affect dispatch ranking or commission
-19. Pro-facing profile, rating, acceptance rate and history views
+_Operations_ 14. **Availability toggle** — `isAvailable` is a straight on/off-duty flag, **set by an admin**. There is no roster; free windows come from committed bookings 15. **Admin availability roster screen** — every approved Pro in a city with their flag, filterable, with bulk on/off. Without this, switching a workforce on each morning is a per-record chore 16. Live location ingest into Redis GEO; periodic cold flush to the Pro record as a fallback 17. Status lifecycle: applied → under_review → approved → suspended 18. **Acceptance rate** — `assignmentsAcknowledged ÷ assignmentsOffered`, maintained as exact counters and rebuilt nightly. **Reporting only** — it does not affect dispatch ranking or commission 19. Pro-facing profile, rating, acceptance rate and history views
 
 **Depends on:** Catalog (services), Geo & Routing (location ingest), Admin Console (review queue, availability roster)
 
@@ -241,10 +215,10 @@ Recruiting, verifying and maintaining the workforce.
 
 Customer collection in **two modes**. **Razorpay is the store of record for online payment attempts** — the platform keeps only `Order`. Cash has no gateway and no `Order` row at all.
 
-| Mode | `Booking.paymentMode` | When money moves | Store of record |
-|---|---|---|---|
-| Online | `online` | Before dispatch | Razorpay, via `Order` |
-| Cash | `cash` | After completion, at the door | `Booking.cashCollectedAmount` |
+| Mode   | `Booking.paymentMode` | When money moves              | Store of record               |
+| ------ | --------------------- | ----------------------------- | ----------------------------- |
+| Online | `online`              | Before dispatch               | Razorpay, via `Order`         |
+| Cash   | `cash`                | After completion, at the door | `Booking.cashCollectedAmount` |
 
 **Features — online**
 
@@ -274,7 +248,8 @@ Customer collection in **two modes**. **Razorpay is the store of record for onli
 
 > **Trade-off to know:** attempt-level questions — retries, duplicate charges — are answered from the **Razorpay dashboard**, not the admin console. Nothing is built here for it. In exchange, there is no local copy of payment data to drift out of sync with the gateway.
 
-> **What cash costs, stated plainly.** Every guarantee online payment provides is inverted: money moves *after* the work, *in person*, into *the Pro's hand*. Four consequences follow, and three of them are unresolved.
+> **What cash costs, stated plainly.** Every guarantee online payment provides is inverted: money moves _after_ the work, _in person_, into _the Pro's hand_. Four consequences follow, and three of them are unresolved.
+>
 > 1. **No `Order` row for cash.** Any report joining `Order` silently undercounts every cash booking. Most likely bug from this feature.
 > 2. **`paymentStatus = paid` stops meaning "the platform has the money".** For cash it means an employee is carrying banknotes. Financial reporting must read `paymentMode` alongside it.
 > 3. **Cancellation fees are uncollectable.** No instrument, no balance. Late cancellation is free for cash customers and costs a Pro's travel each time.
@@ -337,7 +312,8 @@ Making Pros competent, and capturing what customers thought.
 
 **Features**
 
-*Training — delivered in the Pro app*
+_Training — delivered in the Pro app_
+
 1. Trade-level training modules: video, document, checklist or quiz, served by `contentUrl` and played **inside the app**
 2. Trade-specific delivery — an electrician sees electrical procedures and checklists, derived from their assigned services
 3. Per-Pro progress tracking with percent complete and quiz scores, **resumable from the last position** so an interrupted video isn't restarted from zero
@@ -348,13 +324,7 @@ Making Pros competent, and capturing what customers thought.
 8. Offline session scheduling — venue, trainer, capacity — for client-run classroom and field training
 9. Enrolment and attendance marking by an admin
 
-*Reviews — both directions*
-10. Customer reviews on completed bookings: star rating, comment, optional photos of the finished work, quick tags
-11. **Pro reviews of the customer** on the same booking, distinguished by `reviewerType`, with a **controlled tag vocabulary** (`no_access`, `unsafe`, `pets_loose`, `payment_difficulty`, `pleasant`) rather than free text
-12. `Customer.ratingSum` / `ratingCount` mirror the Pro counters and are covered by the same nightly rebuild
-13. Pro-authored ratings surfaced to ops and on the job card of the next Pro dispatched there — **never to the customer**
-14. Review moderation — hide abusive text or a photo that exposes the customer's home, with reason and admin attribution
-15. Rating maintained as exact counters (`ratingSum` / `ratingCount`); the customer→Pro direction feeds the dispatch tie-break and the Pro's public profile
+_Reviews — both directions_ 10. Customer reviews on completed bookings: star rating, comment, optional photos of the finished work, quick tags 11. **Pro reviews of the customer** on the same booking, distinguished by `reviewerType`, with a **controlled tag vocabulary** (`no_access`, `unsafe`, `pets_loose`, `payment_difficulty`, `pleasant`) rather than free text 12. `Customer.ratingSum` / `ratingCount` mirror the Pro counters and are covered by the same nightly rebuild 13. Pro-authored ratings surfaced to ops and on the job card of the next Pro dispatched there — **never to the customer** 14. Review moderation — hide abusive text or a photo that exposes the customer's home, with reason and admin attribution 15. Rating maintained as exact counters (`ratingSum` / `ratingCount`); the customer→Pro direction feeds the dispatch tie-break and the Pro's public profile
 
 **Depends on:** Catalog (trade categories), Booking (review target)
 
@@ -374,25 +344,17 @@ Two-sided SOS, disputes, and system-detected exceptions.
 
 **Features**
 
-*Safety*
+_Safety_
+
 1. **One-tap SOS from the customer** — for situations such as being alone at home and uncomfortable
 2. **One-tap SOS from the Pro** — for a Pro in transit or on site who doesn't feel safe, or facing a dispute risk
 3. Alert carries live location and a full snapshot of the booking context
 4. Ops acknowledgement with response timestamp, then resolution or false-alarm closure
 5. SOS alerts bypass normal ticket queuing
 
-*Support*
-6. Tickets raised by customer, Pro, or the system itself
-7. Categories: billing, quality, dispute, app issue, no-start
-8. Threaded conversation with internal-only notes invisible to the raiser
-9. Priority and escalation
-10. Assignment to a support admin, with resolution notes on close
+_Support_ 6. Tickets raised by customer, Pro, or the system itself 7. Categories: billing, quality, dispute, app issue, no-start 8. Threaded conversation with internal-only notes invisible to the raiser 9. Priority and escalation 10. Assignment to a support admin, with resolution notes on close
 
-*System-detected exceptions*
-11. **No-start detection** — a Pro marks arrival but doesn't start within the configured grace window
-12. Raised automatically as an internal ticket for ops, carrying the grace window that was applied
-13. **Never surfaced to the Pro** — handled quietly, by design
-14. Dispute resolution backed by booking evidence: status timeline with coordinates, photo proof, route trail, chat log
+_System-detected exceptions_ 11. **No-start detection** — a Pro marks arrival but doesn't start within the configured grace window 12. Raised automatically as an internal ticket for ops, carrying the grace window that was applied 13. **Never surfaced to the Pro** — handled quietly, by design 14. Dispute resolution backed by booking evidence: status timeline with coordinates, photo proof, route trail, chat log
 
 **Depends on:** Booking (evidence), Config (grace window), Notifications
 
@@ -439,7 +401,7 @@ Everything spatial. No tables of its own — Redis plus reads from Pro and Custo
 
 **External:** OpenStreetMap (Nominatim / OSRM)
 
-> **Cost note on the pre-dispatch ETA.** It runs on *browsing* traffic, not booking traffic — orders of magnitude more calls than dispatch itself. A full candidate ranking per page view is both a routing bill and a latency problem. Use a coarse radius query with cached travel times, and show a range rather than a number.
+> **Cost note on the pre-dispatch ETA.** It runs on _browsing_ traffic, not booking traffic — orders of magnitude more calls than dispatch itself. A full candidate ranking per page view is both a routing bill and a latency problem. Use a coarse radius query with cached travel times, and show a range rather than a number.
 
 ---
 
@@ -449,20 +411,14 @@ Changing behaviour and screens without shipping an app release.
 
 **Features**
 
-*Platform settings*
+_Platform settings_
+
 1. Key/value settings with optional per-city override
 2. Covers every tunable the scope document calls configurable: no-start grace window, acknowledgement window, rotation cooldown, dispatch candidate pool size, review photo cap
 3. **Plus the two cold-start constants** — `dispatch.ratingPriorMean` and `dispatch.ratingPriorWeight`. These decide how a Pro with few reviews ranks against an established one, so a change here redistributes work across the whole city. Treat editing them like editing a price
 4. Change attribution and timestamp on every setting
 
-*Server-driven UI*
-5. Component-based home screen defined as a JSON tree
-6. Served via CDN (CloudFront) with a single endpoint managing the tree
-7. Versioning with publish and rollback
-8. Per-user-context loading — segment and city determine what a given user sees
-9. Cache invalidation on publish
-10. Minimum app version gating per config
-11. Layouts, categories and banners changeable without an app-store release
+_Server-driven UI_ 5. Component-based home screen defined as a JSON tree 6. Served via CDN (CloudFront) with a single endpoint managing the tree 7. Versioning with publish and rollback 8. Per-user-context loading — segment and city determine what a given user sees 9. Cache invalidation on publish 10. Minimum app version gating per config 11. Layouts, categories and banners changeable without an app-store release
 
 **External:** AWS CloudFront
 
@@ -470,9 +426,8 @@ Changing behaviour and screens without shipping an app release.
 
 ## Externals added by these features
 
-| Feature | Third party | Note |
-|---|---|---|
-| **DigiLocker document fetch** | DigiLocker (MeitY) | OAuth consent + issued-document API. Requires partner registration. Only works if the applicant has linked those documents |
+| Feature                 | Third party      | Note                                                                                                        |
+| ----------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------- |
 | Training video delivery | CDN (CloudFront) | Video is the expensive content type on a metered connection — download-on-wifi matters for completion rates |
 
 ---
@@ -483,7 +438,8 @@ The operations, support and finance surface.
 
 **Features**
 
-*Operations*
+_Operations_
+
 1. Role-based login and navigation — ops, support, finance, super admin
 2. **Live dispatch map** with real-time booking-to-Pro state and manual override tools
 3. Pro onboarding queue with document review and call logging
@@ -492,20 +448,11 @@ The operations, support and finance surface.
 6. **Availability roster** — every approved Pro in a city with their `isAvailable` flag, filterable, with bulk on/off. This is a daily-use screen: since Pros cannot set the flag themselves, ops switches the workforce on each morning and off each evening
 7. **Bulk operations** — a dedicated surface for mass edits, so ops is never forced into one-by-one changes; runs async with a downloadable error log
 
-*Reporting*
-8. Async report exports in CSV, XLSX or PDF
-9. Filterable by Pro, city, service, customer segment and date range
-10. Report types: commission, operational, retention, city performance
-11. Bookings, revenue and retention analytics structured for marketing decisions
+_Reporting_ 8. Async report exports in CSV, XLSX or PDF 9. Filterable by Pro, city, service, customer segment and date range 10. Report types: commission, operational, retention, city performance 11. Bookings, revenue and retention analytics structured for marketing decisions
 
-*Finance*
-12. Commission rate configuration **per service** — `commissionType` and `commissionValue` on the catalogue row. There are no tiers
-13. Payout batch review and approval
-14. Collections, dues and variance views over the ledger
+_Finance_ 12. Commission rate configuration **per service** — `commissionType` and `commissionValue` on the catalogue row. There are no tiers 13. Payout batch review and approval 14. Collections, dues and variance views over the ledger
 
-*Governance*
-15. Audit log of every mutating admin action, with before and after state and IP — **including every availability toggle**, so "why did Ravi get no jobs on Tuesday" is answerable
-16. Platform settings management
+_Governance_ 15. Audit log of every mutating admin action, with before and after state and IP — **including every availability toggle**, so "why did Ravi get no jobs on Tuesday" is answerable 16. Platform settings management
 
 **Depends on:** every other module (read), Ledger, Commission, Dispatch
 
@@ -524,25 +471,25 @@ Cancellation touches six modules and is the flow most likely to be built wrong, 
 
 ### The six windows
 
-| Window | Booking status | Customer refund | Assignment | Commission |
-|---|---|---|---|---|
-| **A** — before payment | `created`, `awaiting_payment` | nothing was charged | none exists | none |
-| **B** — paid, not yet assigned | `assigning` | 100% | none exists | none |
-| **C** — assigned, not yet travelling | `assigned` | 100% | closed, Pro freed for other work | none |
-| **D** — Pro en route or arrived | `en_route`, `arrived` | 100% less cancellation fee *(configurable, default 0)* | closed; Pro is salaried, nothing owed | none |
-| **E** — job under way | `started` | partial, at ops discretion | job stopped | only if ops directs, computed on actual duration |
-| **F** — job completed | `completed` | **not a cancellation** — see disputes below | — | reversed if the refund is upheld |
+| Window                               | Booking status                | Customer refund                                        | Assignment                            | Commission                                       |
+| ------------------------------------ | ----------------------------- | ------------------------------------------------------ | ------------------------------------- | ------------------------------------------------ |
+| **A** — before payment               | `created`, `awaiting_payment` | nothing was charged                                    | none exists                           | none                                             |
+| **B** — paid, not yet assigned       | `assigning`                   | 100%                                                   | none exists                           | none                                             |
+| **C** — assigned, not yet travelling | `assigned`                    | 100%                                                   | closed, Pro freed for other work      | none                                             |
+| **D** — Pro en route or arrived      | `en_route`, `arrived`         | 100% less cancellation fee _(configurable, default 0)_ | closed; Pro is salaried, nothing owed | none                                             |
+| **E** — job under way                | `started`                     | partial, at ops discretion                             | job stopped                           | only if ops directs, computed on actual duration |
+| **F** — job completed                | `completed`                   | **not a cancellation** — see disputes below            | —                                     | reversed if the refund is upheld                 |
 
 Windows A–D reverse no commission because `BookingCommission` is only written on completion. There is nothing to unwind.
 
 ### Who cancels, and why
 
-| Actor | Trigger | Recorded as |
-|---|---|---|
-| **Customer** | in-app, any time before `started`; after that, only through support | `cancelledByType = customer` |
-| **Ops** | safety incident, fraud, duplicate booking, or dispatch exhausted with no Pro found | `cancelledByType = ops` |
-| **System** | payment never completed inside the hold window; recurring plan ended; max assignment attempts exhausted | `cancelledByType = system` |
-| **Pro** | **never** — see principle 2 | *(no such path)* |
+| Actor        | Trigger                                                                                                 | Recorded as                  |
+| ------------ | ------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| **Customer** | in-app, any time before `started`; after that, only through support                                     | `cancelledByType = customer` |
+| **Ops**      | safety incident, fraud, duplicate booking, or dispatch exhausted with no Pro found                      | `cancelledByType = ops`      |
+| **System**   | payment never completed inside the hold window; recurring plan ended; max assignment attempts exhausted | `cancelledByType = system`   |
+| **Pro**      | **never** — see principle 2                                                                             | _(no such path)_             |
 
 ### Refund execution
 
@@ -581,29 +528,29 @@ A completed job cannot be cancelled. It is disputed, which is a different path w
 4. If upheld: refund flow above, plus commission reversal
 5. The ticket's `actionTaken` records any consequence for the Pro — warning, retraining, per-service suspension, or full suspension
 
-This is what the OTP-verified start and mandatory photo proof are *for*. Without them a dispute is the customer's word against the platform's.
+This is what the OTP-verified start and mandatory photo proof are _for_. Without them a dispute is the customer's word against the platform's.
 
 ### Module responsibilities
 
-| Module | Role in this flow |
-|---|---|
-| **4 · Booking** | Owns the state transition, cancellation reason and actor; writes the status event |
-| **5 · Dispatch** | Closes any live assignment, releases the Pro, cancels queued retries |
-| **7 · Payments** | Executes the Razorpay refund, tracks initiated → settled |
-| **8 · Commission** | Reverses commission, schedules the deduction if already paid out |
-| **9 · Ledger** | Appends refund and reversal entries; nightly recon verifies settlement |
-| **11 · Safety & Support** | Owns dispute tickets and the evidence review |
-| **12 · Notifications** | Tells the customer what was refunded and when it will land |
+| Module                    | Role in this flow                                                                 |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| **4 · Booking**           | Owns the state transition, cancellation reason and actor; writes the status event |
+| **5 · Dispatch**          | Closes any live assignment, releases the Pro, cancels queued retries              |
+| **7 · Payments**          | Executes the Razorpay refund, tracks initiated → settled                          |
+| **8 · Commission**        | Reverses commission, schedules the deduction if already paid out                  |
+| **9 · Ledger**            | Appends refund and reversal entries; nightly recon verifies settlement            |
+| **11 · Safety & Support** | Owns dispute tickets and the evidence review                                      |
+| **12 · Notifications**    | Tells the customer what was refunded and when it will land                        |
 
 ### Where the refund fields live
 
 All three fields this flow needed are now in the model.
 
-| Field | Location | Purpose |
-|---|---|---|
-| `cancelledAt` | `Booking` | `cancelReason` and `cancelledByType` needed a timestamp alongside every other authoritative Booking time |
-| `cancellationFeeAmount`, `refundedAmount` | `Booking` | Windows D and E allow a partial refund — this is the record of what was retained |
-| `refundStatus`, `razorpayRefundId`, `refundAmount`, `refundedAt` | `Order` | Moved here when `Payment` was dropped. `refundStatus` carries `none → initiated → settled \| failed`, the five-to-seven-day state customers keep asking about |
+| Field                                                            | Location  | Purpose                                                                                                                                                       |
+| ---------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cancelledAt`                                                    | `Booking` | `cancelReason` and `cancelledByType` needed a timestamp alongside every other authoritative Booking time                                                      |
+| `cancellationFeeAmount`, `refundedAmount`                        | `Booking` | Windows D and E allow a partial refund — this is the record of what was retained                                                                              |
+| `refundStatus`, `razorpayRefundId`, `refundAmount`, `refundedAt` | `Order`   | Moved here when `Payment` was dropped. `refundStatus` carries `none → initiated → settled \| failed`, the five-to-seven-day state customers keep asking about |
 
 The nightly reconciliation flags any refund still `initiated` past the expected settlement window as an `unsettled_refund` discrepancy.
 
@@ -611,27 +558,27 @@ The nightly reconciliation flags any refund still `initiated` past the expected 
 
 ## Cross-cutting concerns
 
-| Concern | Approach |
-|---|---|
-| **Idempotency** | Payment webhooks, notification sends and dispatch assignment are all idempotent — retries are safe |
-| **Concurrency** | Booking assignment guarded by a Redis distributed lock plus a database partial-unique constraint |
-| **Audit** | Two trails: `BookingStatusEvent` for job lifecycle, `AdminAuditLog` for admin mutations |
-| **Money integrity** | Append-only hash-chained ledger, verified nightly against source records |
-| **Derived data** | Counters incremented on write, rebuilt nightly from source; source always wins on conflict |
-| **PII** | Aadhaar and PAN numbers masked at rest; phone numbers masked in customer↔Pro calling |
-| **Config** | No magic numbers — every tunable lives in PlatformSetting |
+| Concern             | Approach                                                                                                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Idempotency**     | Payment webhooks, notification sends and dispatch assignment are all idempotent — retries are safe                                                        |
+| **Concurrency**     | Booking assignment guarded by a Redis distributed lock plus a database partial-unique constraint                                                          |
+| **Audit**           | `BookingStatusEvent` remains the planned job-lifecycle trail; administrative mutation auditing is deferred pending schema, retention and access decisions |
+| **Money integrity** | Append-only hash-chained ledger, verified nightly against source records                                                                                  |
+| **Derived data**    | Counters incremented on write, rebuilt nightly from source; source always wins on conflict                                                                |
+| **PII**             | Aadhaar and PAN numbers masked at rest; phone numbers masked in customer↔Pro calling                                                                      |
+| **Config**          | No magic numbers — every tunable lives in PlatformSetting                                                                                                 |
 
 ---
 
 ## Suggested build order
 
-| Phase | Modules | Rationale |
-|---|---|---|
-| 1 | Identity, Customer Profile, Catalog, Config | Nothing else works without accounts, addresses and something to book |
-| 2 | Pro Management, Geo & Routing, Notifications | Supply side and the shared services dispatch needs |
-| 3 | Booking, Dispatch | The core loop — this is where the product becomes real |
-| 4 | Payments, Commission | Money in, money out |
-| 5 | Ledger & Reconciliation, Admin Console | Books and the operations surface |
-| 6 | Training & Quality, Safety & Support | Trust layer — required for launch, not for a working demo |
+| Phase | Modules                                      | Rationale                                                            |
+| ----- | -------------------------------------------- | -------------------------------------------------------------------- |
+| 1     | Identity, Customer Profile, Catalog, Config  | Nothing else works without accounts, addresses and something to book |
+| 2     | Pro Management, Geo & Routing, Notifications | Supply side and the shared services dispatch needs                   |
+| 3     | Booking, Dispatch                            | The core loop — this is where the product becomes real               |
+| 4     | Payments, Commission                         | Money in, money out                                                  |
+| 5     | Ledger & Reconciliation, Admin Console       | Books and the operations surface                                     |
+| 6     | Training & Quality, Safety & Support         | Trust layer — required for launch, not for a working demo            |
 
 Phase 3 is the risk concentration. Dispatch depends on Pro rosters, geo routing and booking state simultaneously, and it is the module where a wrong decision is most expensive to unwind.

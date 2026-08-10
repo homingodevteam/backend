@@ -13,17 +13,12 @@ function buildContext(user: unknown): ExecutionContext {
 }
 
 describe('PermissionsGuard', () => {
-  const auditLog = { record: jest.fn().mockResolvedValue(undefined) };
   it('allows the request through when no permissions are required', async () => {
     const reflector = {
       getAllAndOverride: jest.fn().mockReturnValue(undefined),
     };
     const prisma = { role: { findUnique: jest.fn() } };
-    const guard = new PermissionsGuard(
-      reflector as never,
-      prisma as never,
-      auditLog as never,
-    );
+    const guard = new PermissionsGuard(reflector as never, prisma as never);
 
     await expect(
       guard.canActivate(buildContext({ actorType: 'customer' })),
@@ -36,11 +31,7 @@ describe('PermissionsGuard', () => {
       getAllAndOverride: jest.fn().mockReturnValue(['pro.moderate']),
     };
     const prisma = { role: { findUnique: jest.fn() } };
-    const guard = new PermissionsGuard(
-      reflector as never,
-      prisma as never,
-      auditLog as never,
-    );
+    const guard = new PermissionsGuard(reflector as never, prisma as never);
 
     await expect(
       guard.canActivate(buildContext({ actorType: 'pro' })),
@@ -52,11 +43,7 @@ describe('PermissionsGuard', () => {
       getAllAndOverride: jest.fn().mockReturnValue(['pro.moderate']),
     };
     const prisma = { role: { findUnique: jest.fn().mockResolvedValue(null) } };
-    const guard = new PermissionsGuard(
-      reflector as never,
-      prisma as never,
-      auditLog as never,
-    );
+    const guard = new PermissionsGuard(reflector as never, prisma as never);
 
     await expect(
       guard.canActivate(
@@ -76,11 +63,7 @@ describe('PermissionsGuard', () => {
           .mockResolvedValue({ permissionCodes: ['customer.moderate'] }),
       },
     };
-    const guard = new PermissionsGuard(
-      reflector as never,
-      prisma as never,
-      auditLog as never,
-    );
+    const guard = new PermissionsGuard(reflector as never, prisma as never);
 
     await expect(
       guard.canActivate(buildContext({ actorType: 'admin', roleId: 'r1' })),
@@ -100,11 +83,7 @@ describe('PermissionsGuard', () => {
         }),
       },
     };
-    const guard = new PermissionsGuard(
-      reflector as never,
-      prisma as never,
-      auditLog as never,
-    );
+    const guard = new PermissionsGuard(reflector as never, prisma as never);
 
     await expect(
       guard.canActivate(buildContext({ actorType: 'admin', roleId: 'r1' })),

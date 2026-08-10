@@ -7,11 +7,9 @@ import {
   Patch,
   Post,
   Query,
-  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import {
   ApiErrorEnvelope,
@@ -34,6 +32,7 @@ import { ProApplicationDto } from './dto/pro-application.dto';
 import { ProServiceDto } from './dto/pro-service.dto';
 import { ProDto } from './dto/pro.dto';
 import { SetAvailabilityDto } from './dto/set-availability.dto';
+import { SuspendProDto } from './dto/suspend-pro.dto';
 import { UpdateProServiceDto } from './dto/update-pro-service.dto';
 import { VerifyDocumentDto } from './dto/verify-document.dto';
 import { KycDocumentsService } from './kyc-documents.service';
@@ -86,14 +85,8 @@ export class AdminProsController {
     @Param('id') id: string,
     @Body() dto: VerifyDocumentDto,
     @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<ProApplication> {
-    return this.applicationsService.verifyDocument(
-      id,
-      dto,
-      actor.id,
-      request.ip ?? null,
-    );
+    return this.applicationsService.verifyDocument(id, dto, actor.id);
   }
 
   @Get('pro-applications/:id/documents/:docType/view-url')
@@ -111,15 +104,8 @@ export class AdminProsController {
   requestDocumentViewUrl(
     @Param('id') id: string,
     @Param('docType') docType: string,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<{ viewUrl: string; expiresIn: number }> {
-    return this.kycDocumentsService.requestViewUrl(
-      id,
-      docType,
-      actor.id,
-      request.ip ?? null,
-    );
+    return this.kycDocumentsService.requestViewUrl(id, docType);
   }
 
   @Patch('pro-applications/:id/log-call')
@@ -131,9 +117,8 @@ export class AdminProsController {
   logCall(
     @Param('id') id: string,
     @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<ProApplication> {
-    return this.applicationsService.logCall(id, actor.id, request.ip ?? null);
+    return this.applicationsService.logCall(id, actor.id);
   }
 
   @Patch('pro-applications/:id/decision')
@@ -151,14 +136,8 @@ export class AdminProsController {
     @Param('id') id: string,
     @Body() dto: ApplicationDecisionDto,
     @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<ProApplication> {
-    return this.applicationsService.decide(
-      id,
-      dto,
-      actor.id,
-      request.ip ?? null,
-    );
+    return this.applicationsService.decide(id, dto, actor.id);
   }
 
   // ----- Roster & moderation -----
@@ -200,15 +179,8 @@ export class AdminProsController {
   updateProfile(
     @Param('id') id: string,
     @Body() dto: AdminUpdateProProfileDto,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<Pro> {
-    return this.prosService.updateProfileByAdmin(
-      id,
-      dto,
-      actor.id,
-      request.ip ?? null,
-    );
+    return this.prosService.updateProfileByAdmin(id, dto);
   }
 
   @Patch('pros/:id/suspend')
@@ -223,10 +195,10 @@ export class AdminProsController {
   )
   suspend(
     @Param('id') id: string,
+    @Body() dto: SuspendProDto,
     @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<Pro> {
-    return this.prosService.suspend(id, actor.id, request.ip ?? null);
+    return this.prosService.suspend(id, dto, actor.id);
   }
 
   @Patch('pros/:id/reinstate')
@@ -239,12 +211,8 @@ export class AdminProsController {
     HttpStatus.CONFLICT,
     HttpStatus.NOT_FOUND,
   )
-  reinstate(
-    @Param('id') id: string,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
-  ): Promise<Pro> {
-    return this.prosService.reinstate(id, actor.id, request.ip ?? null);
+  reinstate(@Param('id') id: string): Promise<Pro> {
+    return this.prosService.reinstate(id);
   }
 
   @Patch('pros/:id/availability')
@@ -256,15 +224,8 @@ export class AdminProsController {
   setAvailability(
     @Param('id') id: string,
     @Body() dto: SetAvailabilityDto,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<Pro> {
-    return this.prosService.setAvailability(
-      id,
-      dto.isAvailable,
-      actor.id,
-      request.ip ?? null,
-    );
+    return this.prosService.setAvailability(id, dto.isAvailable);
   }
 
   @Patch('pros/availability/bulk')
@@ -273,17 +234,8 @@ export class AdminProsController {
   @ApiOperation({ summary: 'Bulk toggle a set of Pros on/off duty' })
   @ApiOkEnvelope(ProDto, { isArray: true })
   @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.BAD_REQUEST)
-  bulkSetAvailability(
-    @Body() dto: BulkAvailabilityDto,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
-  ): Promise<Pro[]> {
-    return this.prosService.bulkSetAvailability(
-      dto.proIds,
-      dto.isAvailable,
-      actor.id,
-      request.ip ?? null,
-    );
+  bulkSetAvailability(@Body() dto: BulkAvailabilityDto): Promise<Pro[]> {
+    return this.prosService.bulkSetAvailability(dto.proIds, dto.isAvailable);
   }
 
   // ----- Service assignment -----
@@ -297,15 +249,8 @@ export class AdminProsController {
   assignService(
     @Param('id') proId: string,
     @Body() dto: AssignServiceDto,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<ProService> {
-    return this.serviceAssignmentsService.assign(
-      proId,
-      dto,
-      actor.id,
-      request.ip ?? null,
-    );
+    return this.serviceAssignmentsService.assign(proId, dto);
   }
 
   @Patch('pros/:id/services/:serviceId')
@@ -320,15 +265,7 @@ export class AdminProsController {
     @Param('id') proId: string,
     @Param('serviceId') serviceId: string,
     @Body() dto: UpdateProServiceDto,
-    @CurrentUser() actor: AuthenticatedUser,
-    @Req() request: FastifyRequest,
   ): Promise<ProService> {
-    return this.serviceAssignmentsService.update(
-      proId,
-      serviceId,
-      dto,
-      actor.id,
-      request.ip ?? null,
-    );
+    return this.serviceAssignmentsService.update(proId, serviceId, dto);
   }
 }

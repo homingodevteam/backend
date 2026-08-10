@@ -47,7 +47,7 @@ _Onboarding (8/8)_
 | #   | Feature                                                      | Status                                                                                                                          |
 | --- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | In-app self-application, referral attribution                | ✅                                                                                                                              |
-| 2   | Aadhaar/PAN capture, either route per document               | ✅ (manual → S3 presigned upload; DigiLocker returns a clear "not integrated yet" error rather than a silent gap)               |
+| 2   | Aadhaar/PAN manual document capture                          | ✅ (manual S3 presigned upload and independent human review; DigiLocker is outside the active scope)                            |
 | 3   | Independent verification per document                        | ✅                                                                                                                              |
 | 4   | Admin queue: pending → docs review → call pending → decision | ✅ (`queueStatus`)                                                                                                              |
 | 5   | Verification call logging                                    | ✅                                                                                                                              |
@@ -86,7 +86,7 @@ _Operations (6/6)_
 
 Every table these three modules own was compared field-by-field against the authoritative v10 ER diagram (Eraser, team TheUnknownGMR) — the ERD, not the narrative doc, is the source of truth for actual column names/types per this project's established precedence.
 
-**Exact match:** `Customer`, `City`, `Pro`, `ProApplication`, `ProService`, `ProBankAccount`, `Role`, `AdminUser`, `AdminAuditLog` — every column the ERD specifies, and no extras (`updatedAt` aside, which is standard practice on every table and harmless).
+**Current development scope:** `Customer`, `City`, `Pro`, `ProApplication`, `ProService`, `ProBankAccount`, `Role`, and `AdminUser`. Administrative audit persistence has since been explicitly deferred and `AdminAuditLog` removed pending product decisions.
 
 **One deviation found and corrected:** `CustomerAddress.deliveryNotes` had been added in the pass above, prompted by `Modules_and_Features 1.md`'s feature #4 ("landmark **and** free-text delivery notes"). The ERD's `CustomerAddress` only has `landmark` — no separate notes field. Per this project's own rule (ERD wins on schema shape, the narrative doc wins on business-rule _why_), that column has been **removed** — migration `20260807122120_remove_customer_address_delivery_notes` — and `landmark` alone stands for both jobs, matching the ERD exactly. Module 2 is now 8/9 built, with delivery notes correctly out of scope until/unless the ERD is updated to add that column.
 
@@ -101,21 +101,20 @@ Every table these three modules own was compared field-by-field against the auth
 
 ## What's genuinely out of scope (not a gap — a dependency on an unbuilt module)
 
-| Deferred item                                        | Needs                                          | Where the seam is                              |
-| ---------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
-| City resolution from coordinate, real serviceability | Module 13 (Geo & Routing)                      | `customers.service.ts`                         |
-| Razorpay customer object                             | Module 7 (Payments)                            | `Customer.razorpayCustomerId` column, unset    |
-| Address in-flight-booking guard                      | Module 4 (Booking)                             | `TODO` comment in `customers.service.ts`       |
-| Dispatch consuming `Pro.status`/`ProService`         | Module 5 (Dispatch Engine)                     | N/A yet                                        |
-| Rating/acceptance-rate/completedJobs counters        | Modules 5 (Dispatch) + 10 (Training & Reviews) | Columns exist, default 0                       |
-| DigiLocker auto-verify                               | External partner registration                  | Explicit `NotImplementedException`, not silent |
+| Deferred item                                        | Needs                                          | Where the seam is                           |
+| ---------------------------------------------------- | ---------------------------------------------- | ------------------------------------------- |
+| City resolution from coordinate, real serviceability | Module 13 (Geo & Routing)                      | `customers.service.ts`                      |
+| Razorpay customer object                             | Module 7 (Payments)                            | `Customer.razorpayCustomerId` column, unset |
+| Address in-flight-booking guard                      | Module 4 (Booking)                             | `TODO` comment in `customers.service.ts`    |
+| Dispatch consuming `Pro.status`/`ProService`         | Module 5 (Dispatch Engine)                     | N/A yet                                     |
+| Rating/acceptance-rate/completedJobs counters        | Modules 5 (Dispatch) + 10 (Training & Reviews) | Columns exist, default 0                    |
 
 ---
 
 ## Test results
 
 **Unit tests — 41 passed, 6 suites, 0 failed**
-New this pass: `auth.service.spec.ts` (10 tests — OTP rate limiting, guest→verified upgrade preserving id, blocked customer rejection, suspended Pro rejection, admin never auto-created), `permissions.guard.spec.ts` (5 tests — no-permission passthrough, non-admin rejection, stale role, missing permission, full pass), `customers.service.spec.ts` (10 tests — auto-default on first address, inactive-city rejection, block/unblock + audit log, ownership check on delete), `pros.service.spec.ts` (10 tests — suspend/reinstate state-machine guards, bulk availability, admin profile update incl. bad cityId, location ingest, employee-code sequence), `pro-applications.service.spec.ts` (6 tests — DigiLocker rejection, manual-URL requirement, dual-verification gate on approval, employee-code idempotency).
+New this pass: `auth.service.spec.ts` (OTP rate limiting, guest→verified upgrade, blocked customer rejection, suspended Pro access, admin provisioning), `permissions.guard.spec.ts` (per-request permission enforcement), `customers.service.spec.ts` (profile and address behavior), and Pro tests covering manual-only KYC, lifecycle gates, exact counters and standing semantics.
 
 **e2e tests — 13 passed, 3 suites, 0 failed**
 `app.e2e-spec.ts`, `envelope.e2e-spec.ts` (response envelope + validation contract), `swagger-envelope.e2e-spec.ts` (OpenAPI schema matches runtime envelope shape).

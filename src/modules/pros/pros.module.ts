@@ -9,6 +9,9 @@ import { ProBankAccountsService } from './pro-bank-accounts.service';
 import { ProServiceAssignmentsService } from './pro-service-assignments.service';
 import { ProsController } from './pros.controller';
 import { ProsService } from './pros.service';
+import { ProCountersService } from './pro-counters.service';
+import { ProStandingService } from './pro-standing.service';
+import { ProProfilePhotoService } from './pro-profile-photo.service';
 
 @Module({
   imports: [IdentityModule, S3Module, RedisModule],
@@ -19,6 +22,10 @@ import { ProsService } from './pros.service';
     ProBankAccountsService,
     ProServiceAssignmentsService,
     KycDocumentsService,
+    ProCountersService,
+    ProStandingService,
+    ProProfilePhotoService,
   ],
+  exports: [ProCountersService],
 })
 export class ProsModule {}
