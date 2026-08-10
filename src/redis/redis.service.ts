@@ -124,4 +124,42 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async geoRemove(key: string, member: string): Promise<void> {
     await this.client.zrem(key, member);
   }
+
+  /**
+   * Queue primitives — `RPUSH` / `LPOP`, so the queue is FIFO.
+   *
+   * Dispatch intake is one job per booking (module 5, feature 1). Deliberately
+   * a plain Redis list rather than a job framework: the per-booking
+   * distributed lock is what makes draining safe, so the transport can stay
+   * this simple and be swapped for BullMQ later without touching the engine.
+   */
+  async listPush(key: string, value: string): Promise<void> {
+    await this.client.rpush(key, value);
+  }
+
+  async listPop(key: string): Promise<string | null> {
+    return this.client.lpop(key);
+  }
+
+  async listLength(key: string): Promise<number> {
+    return this.client.llen(key);
+  }
+
+  /**
+   * Reads one member's position back out of a GEO index.
+   *
+   * Returns null when the member has never reported — which is a real state,
+   * not an error: a Pro who has not gone on duty has no live position, and the
+   * customer's tracking view has to say so rather than show a pin at (0, 0).
+   */
+  async geoPosition(
+    key: string,
+    member: string,
+  ): Promise<{ longitude: number; latitude: number } | null> {
+    const [position] = await this.client.geopos(key, member);
+    if (!position) return null;
+
+    const [longitude, latitude] = position;
+    return { longitude: Number(longitude), latitude: Number(latitude) };
+  }
 }

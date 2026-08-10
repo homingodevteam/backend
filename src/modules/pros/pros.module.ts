@@ -1,6 +1,7 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { RedisModule } from '../../redis/redis.module';
 import { S3Module } from '../../storage/s3.module';
+import { CatalogModule } from '../catalog/catalog.module';
 import { IdentityModule } from '../identity/identity.module';
 import { AdminProsController } from './admin-pros.controller';
 import { KycDocumentsService } from './kyc-documents.service';
@@ -14,7 +15,18 @@ import { ProStandingService } from './pro-standing.service';
 import { ProProfilePhotoService } from './pro-profile-photo.service';
 
 @Module({
-  imports: [IdentityModule, S3Module, RedisModule],
+  // CatalogModule: a Pro can only be assigned a service that exists in the
+  // catalogue, and the check goes through the catalog's own service rather
+  // than reaching into its tables.
+  //
+  // The relationship is genuinely bidirectional — Catalog needs Pro supply
+  // counts to gate a city launch (US-3.9) — so both sides use forwardRef.
+  imports: [
+    IdentityModule,
+    S3Module,
+    RedisModule,
+    forwardRef(() => CatalogModule),
+  ],
   controllers: [ProsController, AdminProsController],
   providers: [
     ProsService,
@@ -26,6 +38,6 @@ import { ProProfilePhotoService } from './pro-profile-photo.service';
     ProStandingService,
     ProProfilePhotoService,
   ],
-  exports: [ProCountersService],
+  exports: [ProCountersService, ProsService],
 })
 export class ProsModule {}

@@ -5,6 +5,7 @@ function buildDeps() {
     assignmentCandidate: {
       findUnique: jest.fn(),
       create: jest.fn(),
+      upsert: jest.fn(),
     },
     booking: { findUnique: jest.fn(), update: jest.fn() },
     bookingStatusEvent: { findFirst: jest.fn(), create: jest.fn() },
@@ -28,9 +29,12 @@ function buildDeps() {
 describe('ProCountersService', () => {
   it('increments an offer exactly once for one assignment attempt', async () => {
     const deps = buildDeps();
-    deps.prisma.assignmentCandidate.findUnique
+    // The dispatch engine owns the candidate row now — it is the only thing
+    // holding the score inputs — so idempotency is guarded by a marker event
+    // rather than by the row's existence.
+    deps.prisma.bookingStatusEvent.findFirst
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'candidate-1' });
+      .mockResolvedValueOnce({ id: 'marker-1' });
     const service = new ProCountersService(
       deps.prisma as never,
       deps.redis as never,
@@ -40,12 +44,29 @@ describe('ProCountersService', () => {
     await service.recordOffer('booking-1', 1, 'pro-1', 4.2, 3);
     await service.recordOffer('booking-1', 1, 'pro-1', 4.2, 3);
 
-    expect(deps.prisma.assignmentCandidate.create).toHaveBeenCalledTimes(1);
     expect(deps.prisma.pro.update).toHaveBeenCalledTimes(1);
     expect(deps.prisma.pro.update).toHaveBeenCalledWith({
       where: { id: 'pro-1' },
       data: { assignmentsOffered: { increment: 1 } },
     });
+  });
+
+  it('does not clobber a candidate row the engine already wrote', async () => {
+    const deps = buildDeps();
+    deps.prisma.bookingStatusEvent.findFirst.mockResolvedValue(null);
+    const service = new ProCountersService(
+      deps.prisma as never,
+      deps.redis as never,
+      deps.config as never,
+    );
+
+    await service.recordOffer('booking-1', 1, 'pro-1', 4.2, 3);
+
+    // Upsert with an empty update: the engine's scores survive.
+    const [[call]] = deps.prisma.assignmentCandidate.upsert.mock.calls as [
+      [{ update: Record<string, unknown> }],
+    ];
+    expect(call.update).toEqual({});
   });
 
   it('stores raw acknowledgement evidence and recomputes the fraction', async () => {

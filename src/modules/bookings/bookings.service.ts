@@ -1,0 +1,402 @@
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { apiError } from '../../common/utils';
+import type { Booking, Prisma } from '../../prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+import { ServiceCatalogService } from '../catalog/service-catalog.service';
+import { CustomersService } from '../customers/customers.service';
+import type { BookingStatus, PaymentMode } from './booking.types';
+import { BookingStateService } from './booking-state.service';
+import { CreateBookingDto } from './dto/create-booking.dto';
+import { DISPATCH_PORT, type DispatchPort } from './ports/dispatch.port';
+import { PAYMENTS_PORT, type PaymentsPort } from './ports/payments.port';
+
+/** Statuses that mean the booking is still live work rather than history. */
+const LIVE_STATUSES: BookingStatus[] = [
+  'created',
+  'awaiting_payment',
+  'assigning',
+  'assigned',
+  'en_route',
+  'arrived',
+  'started',
+];
+
+@Injectable()
+export class BookingsService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly state: BookingStateService,
+    private readonly catalog: ServiceCatalogService,
+    private readonly customers: CustomersService,
+    @Inject(DISPATCH_PORT) private readonly dispatch: DispatchPort,
+    @Inject(PAYMENTS_PORT) private readonly payments: PaymentsPort,
+  ) {}
+
+  // ------------------------------------------------------------------
+  // Creation
+  // ------------------------------------------------------------------
+
+  /**
+   * Instant or scheduled, cash or online.
+   *
+   * Four things are settled here and never revisited: the price, the expected
+   * duration, the payment mode and the slot. All four are read from the
+   * catalogue and the clock — none is taken from the client, because all four
+   * decide what the customer is charged and when someone turns up.
+   *
+   * `idempotencyKey` makes a retried request return the original booking
+   * rather than creating a second one. A double-tap on a slow connection is
+   * the common case, not the exotic one.
+   */
+  async create(
+    customerId: string,
+    dto: CreateBookingDto,
+    idempotencyKey?: string,
+  ): Promise<Booking> {
+    if (idempotencyKey) {
+      const existing = await this.findByIdempotencyKey(
+        customerId,
+        idempotencyKey,
+      );
+      if (existing) return existing;
+    }
+
+    // Ownership first: an address that belongs to someone else must be
+    // indistinguishable from one that does not exist.
+    const address = await this.customers.getAddressForCustomer(
+      customerId,
+      dto.addressId,
+    );
+
+    const { serviceable } = await this.customers.checkServiceability(
+      address.cityId,
+    );
+    if (!serviceable) {
+      throw apiError(
+        'We are not operating in this city yet',
+        HttpStatus.CONFLICT,
+        [
+          {
+            field: 'addressId',
+            message: 'City is not currently serviceable',
+            code: 'CITY_NOT_SERVICEABLE',
+          },
+        ],
+      );
+    }
+
+    // Refuses a draft or retired service, and a service under a hidden
+    // category — the catalogue owns that judgement, not this module.
+    const service = await this.catalog.assertBookable(dto.serviceId);
+
+    const bookingType = dto.slotStartAt ? 'scheduled' : 'instant';
+    this.assertServiceSupports(service, bookingType);
+
+    if (dto.slotStartAt && dto.slotStartAt.getTime() <= Date.now()) {
+      throw apiError(
+        'A scheduled slot must be in the future',
+        HttpStatus.BAD_REQUEST,
+        [
+          {
+            field: 'slotStartAt',
+            message: 'Must be later than now',
+            code: 'SLOT_IN_THE_PAST',
+          },
+        ],
+      );
+    }
+
+    const slotStartAt = dto.slotStartAt ?? new Date();
+    const slotEndAt = new Date(
+      slotStartAt.getTime() + service.durationMinutes * 60_000,
+    );
+
+    const booking = await this.prisma.booking.create({
+      data: {
+        bookingNumber: await this.generateBookingNumber(),
+        customerId,
+        serviceId: service.id,
+        addressId: address.id,
+        bookingType,
+        slotStartAt,
+        slotEndAt,
+        // Frozen here, and never recomputed from the live catalogue again.
+        flatPrice: service.flatPrice,
+        paymentMode: dto.paymentMode,
+        paymentStatus: 'unpaid',
+        status: 'created',
+      },
+    });
+
+    await this.state.recordEvent(booking.id, 'created', 'customer', customerId);
+
+    return this.advanceAfterCreation(booking);
+  }
+
+  /**
+   * One tap, same service and address, new booking.
+   *
+   * Rotation still applies: `rebookedFromBookingId` records the lineage but
+   * the Pro is deliberately not copied. A rebook is not a request for the same
+   * person — dispatch decides that, and deprioritising a household's last Pro
+   * is the whole point of rule 3.
+   */
+  async rebook(customerId: string, sourceBookingId: string): Promise<Booking> {
+    const source = await this.getOwnedBooking(customerId, sourceBookingId);
+
+    const created = await this.create(customerId, {
+      serviceId: source.serviceId,
+      addressId: source.addressId,
+      paymentMode: source.paymentMode as PaymentMode,
+    });
+
+    return this.prisma.booking.update({
+      where: { id: created.id },
+      data: { rebookedFromBookingId: source.id },
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Reads
+  // ------------------------------------------------------------------
+
+  listForCustomer(customerId: string): Promise<Booking[]> {
+    return this.prisma.booking.findMany({
+      where: { customerId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
+  listLiveForCustomer(customerId: string): Promise<Booking[]> {
+    return this.prisma.booking.findMany({
+      where: { customerId, status: { in: LIVE_STATUSES } },
+      orderBy: { slotStartAt: 'asc' },
+    });
+  }
+
+  /** Backs the payment-hold expiry sweep — US-4.6. */
+  findAwaitingPaymentBefore(cutoff: Date): Promise<Booking[]> {
+    return this.prisma.booking.findMany({
+      where: { status: 'awaiting_payment', createdAt: { lt: cutoff } },
+      take: 500,
+    });
+  }
+
+  listForPro(proId: string): Promise<Booking[]> {
+    return this.prisma.booking.findMany({
+      where: { proId, status: { in: LIVE_STATUSES } },
+      orderBy: { slotStartAt: 'asc' },
+    });
+  }
+
+  async getOwnedBooking(
+    customerId: string,
+    bookingId: string,
+  ): Promise<Booking> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+    });
+    // Someone else's booking id reads exactly like one that never existed.
+    if (!booking || booking.customerId !== customerId) {
+      throw apiError('Booking not found', HttpStatus.NOT_FOUND);
+    }
+    return booking;
+  }
+
+  async getAssignedBooking(proId: string, bookingId: string): Promise<Booking> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+    });
+    if (!booking || booking.proId !== proId) {
+      throw apiError('Booking not found', HttpStatus.NOT_FOUND);
+    }
+    return booking;
+  }
+
+  async getByIdOrFail(bookingId: string): Promise<Booking> {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+    });
+    if (!booking) throw apiError('Booking not found', HttpStatus.NOT_FOUND);
+    return booking;
+  }
+
+  /**
+   * Everything a disputed job needs, in one call.
+   *
+   * US-4.24 is explicit that this is a design constraint and not a UI one:
+   * "if reconstruction takes four tabs, disputes get settled on the customer's
+   * word instead of the record."
+   */
+  async reconstruct(bookingId: string): Promise<
+    Booking & {
+      statusEvents: unknown[];
+      photoProofs: unknown[];
+      chatMessages: unknown[];
+    }
+  > {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        statusEvents: { orderBy: { occurredAt: 'asc' } },
+        photoProofs: { orderBy: { capturedAt: 'asc' } },
+        chatMessages: { orderBy: { sentAt: 'asc' } },
+      },
+    });
+    if (!booking) throw apiError('Booking not found', HttpStatus.NOT_FOUND);
+    return booking;
+  }
+
+  // ------------------------------------------------------------------
+  // Admin assignment — the manual stand-in for module 5
+  // ------------------------------------------------------------------
+
+  /**
+   * Ops assigns a Pro by hand. This exists because Dispatch (module 5) does
+   * not: without it, every booking would sit in `assigning` forever and no
+   * part of the lifecycle past assignment could be exercised at all.
+   *
+   * When module 5 lands this stays — US-5.14 requires an ops manual override
+   * from the Live Dispatch screen regardless.
+   */
+  async assignPro(
+    bookingId: string,
+    proId: string,
+    adminId: string,
+    reason?: string,
+  ): Promise<Booking> {
+    return this.state.transition({
+      bookingId,
+      to: 'assigned',
+      actorType: 'ops',
+      actorId: adminId,
+      expectedFrom: ['assigning'],
+      data: {
+        pro: { connect: { id: proId } },
+        assignedAt: new Date(),
+        assignmentAttempt: { increment: 1 },
+        assignmentOutcome: 'acknowledged',
+        overriddenByAdmin: { connect: { id: adminId } },
+        overrideReason:
+          reason ?? 'Manual assignment (dispatch engine not built)',
+      },
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Internals
+  // ------------------------------------------------------------------
+
+  /**
+   * The fork feature 8's linear state list could not express: cash dispatches
+   * straight away, online has to be paid for first.
+   */
+  private async advanceAfterCreation(booking: Booking): Promise<Booking> {
+    if (booking.paymentMode === 'cash') {
+      const assigning = await this.state.transition({
+        bookingId: booking.id,
+        to: 'assigning',
+        actorType: 'system',
+        actorId: 'system',
+        expectedFrom: ['created'],
+      });
+      await this.dispatch.requestAssignment(booking.id);
+      return assigning;
+    }
+
+    const awaiting = await this.state.transition({
+      bookingId: booking.id,
+      to: 'awaiting_payment',
+      actorType: 'system',
+      actorId: 'system',
+      expectedFrom: ['created'],
+    });
+
+    // Throws today: Payments is not built. The booking survives in
+    // awaiting_payment, which is the honest state for it to be in.
+    await this.payments.createOrder(booking.id, booking.flatPrice.toString());
+
+    return awaiting;
+  }
+
+  private assertServiceSupports(
+    service: { supportsInstant: boolean; supportsScheduled: boolean },
+    bookingType: 'instant' | 'scheduled',
+  ): void {
+    const supported =
+      bookingType === 'instant'
+        ? service.supportsInstant
+        : service.supportsScheduled;
+
+    if (!supported) {
+      throw apiError(
+        `This service cannot be booked ${bookingType === 'instant' ? 'instantly' : 'for a future slot'}`,
+        HttpStatus.CONFLICT,
+        [
+          {
+            field: 'serviceId',
+            message: `Service does not support ${bookingType} booking`,
+            code: 'BOOKING_TYPE_UNSUPPORTED',
+          },
+        ],
+      );
+    }
+  }
+
+  /**
+   * `HB-<year>-<sequence>`, from a Postgres sequence so concurrent creation
+   * cannot collide. Mirrors `generateEmployeeCode` — deliberately not random,
+   * because the point is a human reading it down a phone line.
+   */
+  private async generateBookingNumber(): Promise<string> {
+    const rows = await this.prisma.$queryRaw<{ nextval: bigint }[]>`
+      SELECT nextval('booking_number_seq') AS nextval
+    `;
+    const year = new Date().getUTCFullYear();
+    return `HB-${year}-${rows[0].nextval.toString().padStart(6, '0')}`;
+  }
+
+  /**
+   * Idempotency without a dedicated table: the key is recorded as a status
+   * event on the booking it created, so a replay finds it by lookup.
+   *
+   * A separate `IdempotencyKey` table would be the textbook answer, but the
+   * ERD has no such table and inventing one would repeat the mistake conflicts
+   * #1 and #13 record.
+   */
+  private async findByIdempotencyKey(
+    customerId: string,
+    key: string,
+  ): Promise<Booking | null> {
+    const event = await this.prisma.bookingStatusEvent.findFirst({
+      where: { status: `idempotency:${key}`, actorId: customerId },
+      include: { booking: true },
+    });
+    return event?.booking ?? null;
+  }
+
+  /** Called by the controller after a successful create. */
+  async recordIdempotencyKey(
+    bookingId: string,
+    customerId: string,
+    key: string,
+  ): Promise<void> {
+    await this.state.recordEvent(
+      bookingId,
+      `idempotency:${key}`,
+      'customer',
+      customerId,
+    );
+  }
+
+  /** Shared by the cancellation and lifecycle services. */
+  static get liveStatuses(): BookingStatus[] {
+    return LIVE_STATUSES;
+  }
+
+  /** Prisma `where` fragment for "still live", reused across services. */
+  static liveWhere(): Prisma.BookingWhereInput {
+    return { status: { in: LIVE_STATUSES } };
+  }
+}

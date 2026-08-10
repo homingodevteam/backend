@@ -17,7 +17,7 @@ datasource db {
 }
 
 // =====================================================================
-// 01 · CATALOG (stub — module 3 isn't built yet, see CatalogModule)
+// 01 · SERVICE CATALOG
 // =====================================================================
 
 model City {
@@ -36,6 +36,75 @@ model City {
 
   @@index([isActive])
   @@map("cities")
+}
+
+/// The browse tree. Field names follow ERD v10 exactly.
+/// Two levels only — a category is either a root (parentCategoryId = null) or
+/// the child of a root; the depth bound is a service-layer rule, not a schema
+/// one. See CONFLICTS_AND_DECISIONS #10.
+model ServiceCategory {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name      String
+  slug      String  @unique
+  iconUrl   String?
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  parentCategoryId String?           @db.Uuid
+  parentCategory   ServiceCategory?  @relation("CategoryTree", fields: [parentCategoryId], references: [id], onDelete: Restrict)
+  childCategories  ServiceCategory[] @relation("CategoryTree")
+
+  services Service[]
+
+  @@index([parentCategoryId, sortOrder])
+  @@index([isActive])
+  @@map("service_categories")
+}
+
+/// The unit of competency, of pricing and of booking. One flat national price
+/// and one commission rate per service — no per-city rows, no tiers.
+/// Field names follow ERD v10 exactly.
+model Service {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categoryId String          @db.Uuid
+  category   ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  name        String
+  description String?
+
+  /// Feeds Dispatch slot sizing and ETA. Deliberately NOT a commission
+  /// input — see CONFLICTS_AND_DECISIONS #7.
+  durationMinutes Int
+  /// The single customer-facing price, snapshotted onto Booking at creation
+  /// (module 4). Serialises as a JSON string — CONFLICTS_AND_DECISIONS #12.
+  flatPrice       Decimal @db.Decimal(12, 2)
+
+  /// Nullable so a service can exist as a draft. Activation is gated on both
+  /// being set — US-3.11: a live service with no rate leaves Pros unpaid.
+  commissionType  String?
+  commissionValue Decimal? @db.Decimal(12, 2)
+
+  /// Which booking flows the customer app may offer for this service.
+  supportsInstant   Boolean @default(true)
+  supportsScheduled Boolean @default(true)
+  supportsRecurring Boolean @default(false)
+
+  /// Draft by default. Going live is an explicit, validated transition.
+  isActive Boolean @default(false)
+
+  proServices    ProService[]
+  bookings       Booking[]
+  recurringPlans RecurringPlan[]
+
+  @@index([categoryId, name])
+  @@index([isActive])
+  @@map("services")
 }
 
 // =====================================================================
@@ -124,9 +193,10 @@ model Customer {
   defaultAddressId String? @db.Uuid
   isBlocked        Boolean @default(false)
 
-  addresses CustomerAddress[]
-  bookings  Booking[]
-  reviews   Review[]
+  addresses      CustomerAddress[]
+  bookings       Booking[]
+  recurringPlans RecurringPlan[]
+  reviews        Review[]
 
   @@index([status, createdAt])
   @@map("customers")
@@ -157,7 +227,8 @@ model CustomerAddress {
 
   isDefault Boolean @default(false)
 
-  bookings Booking[]
+  bookings       Booking[]
+  recurringPlans RecurringPlan[]
 
   @@index([customerId])
   @@index([cityId])
@@ -242,6 +313,8 @@ model Pro {
   services             ProService[]
   bankAccounts         ProBankAccount[]
   bookings             Booking[]
+  startOtpVerifiedJobs Booking[]             @relation("BookingStartOtpVerifier")
+  photoProofs          JobPhotoProof[]
   assignmentCandidates AssignmentCandidate[]
   reviews              Review[]
   commissions          BookingCommission[]
@@ -317,8 +390,8 @@ model ProApplication {
 }
 
 /// ProService(proId, serviceId) is the single source of truth for skill
-/// matching. serviceId has no FK/relation yet because the Service catalog
-/// table (module 3) doesn't exist; it's validated as an opaque string.
+/// matching. A Service is the unit of competency; there is no separate skill
+/// code.
 model ProService {
   id        String   @id @default(uuid()) @db.Uuid
   createdAt DateTime @default(now())
@@ -327,7 +400,8 @@ model ProService {
   proId String @db.Uuid
   pro   Pro    @relation(fields: [proId], references: [id], onDelete: Cascade)
 
-  serviceId String
+  serviceId String  @db.Uuid
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Restrict)
 
   proficiency String    @default("trainee")
   certifiedAt DateTime?
@@ -363,7 +437,7 @@ model ProBankAccount {
 }
 
 // =====================================================================
-// 05-10 · MINIMUM SOURCE MODELS REQUIRED BY PRO LIFECYCLE & STANDING
+// 04 · BOOKING & JOB LIFECYCLE
 // =====================================================================
 
 model Booking {
@@ -374,9 +448,37 @@ model Booking {
   bookingNumber String          @unique
   customerId    String          @db.Uuid
   customer      Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  serviceId     String
+  serviceId     String          @db.Uuid
+  service       Service         @relation(fields: [serviceId], references: [id], onDelete: Restrict)
   addressId     String          @db.Uuid
   address       CustomerAddress @relation(fields: [addressId], references: [id], onDelete: Restrict)
+
+  /// instant | scheduled | recurring
+  bookingType String @default("instant")
+
+  recurringPlanId String?        @db.Uuid
+  recurringPlan   RecurringPlan? @relation(fields: [recurringPlanId], references: [id], onDelete: SetNull)
+
+  rebookedFromBookingId String?   @db.Uuid
+  rebookedFrom          Booking?  @relation("Rebook", fields: [rebookedFromBookingId], references: [id], onDelete: SetNull)
+  rebookedInto          Booking[] @relation("Rebook")
+
+  /// Set for every booking, including instant ones: slotEnd - slotStart is the
+  /// expected duration the job was sold against, so a later edit to
+  /// Service.durationMinutes cannot retroactively resize it (US-3.6).
+  slotStartAt DateTime?
+  slotEndAt   DateTime?
+
+  /// Frozen at creation from Service.flatPrice. Never recomputed from the live
+  /// catalogue — US-3.2, US-3.5.
+  flatPrice Decimal @db.Decimal(12, 2)
+
+  /// online | cash — FROZEN at creation. Forks the state machine: a cash
+  /// booking skips awaiting_payment and has no Order row at all.
+  paymentMode   String @default("cash")
+  /// unpaid | authorized | paid | refunded. For cash, "paid" means a Pro is
+  /// carrying banknotes — read paymentMode beside it.
+  paymentStatus String @default("unpaid")
 
   status String  @default("created")
   proId  String? @db.Uuid
@@ -393,21 +495,133 @@ model Booking {
   overriddenByAdmin   AdminUser? @relation("BookingOverrideAdmin", fields: [overriddenByAdminId], references: [id], onDelete: SetNull)
   overrideReason      String?
 
-  arrivedAt             DateTime?
+  arrivedAt DateTime?
+
+  /// The trust anchor. Only a provider-verified OTP (or an audited ops
+  /// force-start) may set startedAt — never the app's own claim.
+  startOtpProviderRef     String?
+  startOtpAttempts        Int     @default(0)
+  startOtpVerifiedByProId String? @db.Uuid
+  startOtpVerifiedByPro   Pro?    @relation("BookingStartOtpVerifier", fields: [startOtpVerifiedByProId], references: [id], onDelete: SetNull)
+
   startedAt             DateTime?
   completedAt           DateTime?
+  /// Computed from verified start to completion. REPORTING ONLY — commission
+  /// is one flat rate per service. See CONFLICTS_AND_DECISIONS #7 and #18.
   actualDurationMinutes Int?
+  /// Sampled polyline, written ONCE at completion. Never appended per ping.
+  routeTrail            Json?
+
+  /// The invoice is an artifact of the booking, not a table.
+  invoiceNumber String?   @unique
+  invoicePdfUrl String?
+  taxAmount     Decimal?  @db.Decimal(12, 2)
+  invoicedAt    DateTime?
+
+  cancelledAt           DateTime?
+  cancelReason          String?
+  /// customer | ops | system. Never `pro` — a Pro cannot cancel.
+  cancelledByType       String?
+  cancellationFeeAmount Decimal?  @db.Decimal(12, 2)
+  refundedAmount        Decimal?  @db.Decimal(12, 2)
 
   assignmentCandidates AssignmentCandidate[]
   statusEvents         BookingStatusEvent[]
+  chatMessages         ChatMessage[]
+  photoProofs          JobPhotoProof[]
   review               Review?
   commission           BookingCommission?
 
   @@index([proId, status])
   @@index([customerId, createdAt])
+  @@index([customerId, status])
   @@index([addressId, proId, completedAt])
+  @@index([status, slotStartAt])
   @@map("bookings")
 }
+
+/// Generates future bookings on a schedule. Each occurrence is priced when it
+/// is generated, not when the plan was made — CONFLICTS_AND_DECISIONS #21.
+model RecurringPlan {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customerId String          @db.Uuid
+  customer   Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceId  String          @db.Uuid
+  service    Service         @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  addressId  String          @db.Uuid
+  address    CustomerAddress @relation(fields: [addressId], references: [id], onDelete: Restrict)
+
+  /// daily | weekly | biweekly | monthly
+  frequency  String
+  /// [0..6], Sunday = 0. Only meaningful for weekly/biweekly.
+  daysOfWeek Json   @default("[]")
+  /// Wall-clock "HH:mm", interpreted in the booking city's timezone.
+  timeOfDay  String
+
+  startDate DateTime  @db.Date
+  endDate   DateTime? @db.Date
+  /// The generator's cursor: the instant the next occurrence is due.
+  nextRunAt DateTime?
+  isActive  Boolean   @default(true)
+
+  bookings Booking[]
+
+  @@index([isActive, nextRunAt])
+  @@index([customerId])
+  @@map("recurring_plans")
+}
+
+/// Customer ↔ assigned Pro, scoped to one booking. Neither side ever sees the
+/// other's phone number. Survives completion as dispute evidence (US-4.24).
+model ChatMessage {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookingId String  @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  /// customer | pro. Ops reads the thread but never joins it.
+  senderType    String
+  senderId      String    @db.Uuid
+  body          String
+  attachmentUrl String?
+  sentAt        DateTime  @default(now())
+  readAt        DateTime?
+
+  @@index([bookingId, sentAt])
+  @@map("chat_messages")
+}
+
+/// Geo-stamped evidence, not decoration. At least one `completion` row is
+/// required before a job can be completed (US-4.16).
+model JobPhotoProof {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookingId String  @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  proId     String  @db.Uuid
+  pro       Pro     @relation(fields: [proId], references: [id], onDelete: Restrict)
+
+  /// before | after | completion
+  photoType  String
+  photoUrl   String
+  lat        Float?
+  lng        Float?
+  capturedAt DateTime @default(now())
+
+  @@index([bookingId, photoType])
+  @@map("job_photo_proofs")
+}
+
+// =====================================================================
+// 05-10 · MINIMUM SOURCE MODELS REQUIRED BY PRO LIFECYCLE & STANDING
+// =====================================================================
 
 model AssignmentCandidate {
   id        String   @id @default(uuid()) @db.Uuid
@@ -419,14 +633,39 @@ model AssignmentCandidate {
   attemptNumber  Int
   proId          String   @db.Uuid
   pro            Pro      @relation(fields: [proId], references: [id], onDelete: Restrict)
-  isWinner       Boolean  @default(false)
-  ratingScore    Float?
-  offersToday    Int?
+  isWinner Boolean @default(false)
+
+  /// The free window this Pro had, computed from committed bookings alone.
+  windowStart DateTime?
+  windowEnd   DateTime?
+
+  /// Where the engine routed them from — current_location | last_job_location
+  /// | home_base. Recorded so US-5.7 stays answerable after the fact.
+  originType String?
+  originLat  Float?
+  originLng  Float?
+
+  /// Null means excluded before scoring. US-5.11: a Pro who was never a
+  /// candidate must be distinguishable from one who ranked and lost.
+  rank              Int?
+  distanceKm        Float?
+  travelTimeMinutes Int?
+  rotationScore     Float?
+  durationFitScore  Float?
+  /// Smoothed, not the Pro's displayed rating — a 5.0 from two reviews can
+  /// legitimately lose to a 4.6 from two hundred.
+  ratingScore       Float?
+  offersToday       Int?
+  finalRankScore    Float?
+
+  /// unavailable | no_service | out_of_range | rotation_cooldown | already_tried
   excludedReason String?
   evaluatedAt    DateTime @default(now())
 
   @@unique([bookingId, attemptNumber, proId])
   @@index([proId, isWinner])
+  /// Ops opens this by booking, newest attempt first — US-5.9 / US-5.11.
+  @@index([bookingId, attemptNumber, rank])
   @@map("assignment_candidates")
 }
 
@@ -435,11 +674,18 @@ model BookingStatusEvent {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  bookingId  String   @db.Uuid
-  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  status     String
-  actorType  String
-  actorId    String
+  bookingId String  @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  status    String
+  actorType String
+  actorId   String
+
+  /// Where the actor actually was at the transition — dispute and SOS
+  /// evidence. Float, matching every other coordinate in this schema; see
+  /// CONFLICTS_AND_DECISIONS #19.
+  lat Float?
+  lng Float?
+
   occurredAt DateTime @default(now())
 
   @@index([bookingId, occurredAt])

@@ -13,6 +13,14 @@ import { RedisService } from '../../redis/redis.service';
 
 const ACK_EVENT = 'assignment_acknowledged';
 const REBUILD_LOCK = 'jobs:pro-counters:rebuild';
+/**
+ * Marker that `completedJobs` has already been incremented for a booking.
+ * Not a lifecycle status — it lives in the same append-only log purely so the
+ * increment is idempotent across retries.
+ */
+const COMPLETION_COUNTED_EVENT = 'counters:completion_counted';
+/** Per-attempt marker that `assignmentsOffered` has already been incremented. */
+const OFFER_COUNTED_EVENT = 'counters:offer_counted';
 
 @Injectable()
 export class ProCountersService implements OnModuleInit, OnModuleDestroy {
@@ -44,21 +52,43 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
     offersToday?: number,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${bookingId}:${attemptNumber}:${proId}`}, 0))`;
-      const existing = await tx.assignmentCandidate.findUnique({
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${bookingId}:${attemptNumber}:${proId}`}, 0))`;
+
+      // The candidate row is written by the dispatch engine, which is the only
+      // thing that holds the score inputs — travel time, rotation, fit, rank.
+      // This method used to create a two-field version of that row itself and
+      // use its existence as the idempotency guard, which meant that once the
+      // engine existed it always found the row already there and returned
+      // without ever incrementing the counter. Upsert instead of create, and
+      // guard on a marker of our own.
+      await tx.assignmentCandidate.upsert({
         where: {
           bookingId_attemptNumber_proId: { bookingId, attemptNumber, proId },
         },
-      });
-      if (existing) return;
-      await tx.assignmentCandidate.create({
-        data: {
+        update: {},
+        create: {
           bookingId,
           attemptNumber,
           proId,
           isWinner: true,
+          rank: 1,
           ratingScore,
           offersToday,
+        },
+      });
+
+      const marker = `${OFFER_COUNTED_EVENT}:${attemptNumber}`;
+      const alreadyCounted = await tx.bookingStatusEvent.findFirst({
+        where: { bookingId, status: marker, actorId: proId },
+      });
+      if (alreadyCounted) return;
+
+      await tx.bookingStatusEvent.create({
+        data: {
+          bookingId,
+          status: marker,
+          actorType: 'system',
+          actorId: proId,
         },
       });
       await tx.pro.update({
@@ -70,7 +100,7 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
 
   async recordAcknowledgement(bookingId: string, proId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`ack:${bookingId}`}, 0))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`ack:${bookingId}`}, 0))`;
       const booking = await tx.booking.findUnique({ where: { id: bookingId } });
       if (!booking || booking.proId !== proId) {
         throw new NotFoundException('Assigned booking not found');
@@ -126,32 +156,43 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Increments `Pro.completedJobs` for a job that has just completed.
+   *
+   * **This no longer performs the completion itself.** It used to set
+   * `status`/`completedAt` and write the status event, because when it was
+   * written module 4 did not exist and something had to own the transition.
+   * Booking now owns it, and leaving that here made the method a no-op: it
+   * returned early on `status === 'completed'`, which is precisely the state
+   * its only caller hands it, so the counter never moved.
+   *
+   * Idempotent via a marker event, so a retried completion cannot double-count.
+   */
   async recordCompletion(bookingId: string, proId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`complete:${bookingId}`}, 0))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`complete:${bookingId}`}, 0))`;
       const booking = await tx.booking.findUnique({ where: { id: bookingId } });
       if (!booking || booking.proId !== proId) {
         throw new NotFoundException('Assigned booking not found');
       }
-      if (booking.status === 'completed') return;
-      if (booking.status !== 'started') {
+      if (booking.status !== 'completed') {
         throw apiError(
-          'Only a started booking can be completed',
+          'Only a completed booking can be counted',
           HttpStatus.CONFLICT,
         );
       }
-      const now = new Date();
-      await tx.booking.update({
-        where: { id: bookingId },
-        data: { status: 'completed', completedAt: now },
+
+      const alreadyCounted = await tx.bookingStatusEvent.findFirst({
+        where: { bookingId, status: COMPLETION_COUNTED_EVENT },
       });
+      if (alreadyCounted) return;
+
       await tx.bookingStatusEvent.create({
         data: {
           bookingId,
-          status: 'completed',
-          actorType: 'pro',
-          actorId: proId,
-          occurredAt: now,
+          status: COMPLETION_COUNTED_EVENT,
+          actorType: 'system',
+          actorId: 'system',
         },
       });
       await tx.pro.update({
@@ -177,7 +218,7 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
       throw apiError('rating must be an integer from 1 to 5');
     }
     await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`review:${input.bookingId}`}, 0))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`review:${input.bookingId}`}, 0))`;
       const existing = await tx.review.findUnique({
         where: { bookingId: input.bookingId },
       });

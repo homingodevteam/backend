@@ -9,7 +9,8 @@ export class ProServiceDto {
   proId: string;
 
   @ApiProperty({
-    description: 'No FK check yet — Service catalog (module 3) does not exist',
+    format: 'uuid',
+    description: 'Foreign key to the Service catalogue.',
   })
   serviceId: string;
 

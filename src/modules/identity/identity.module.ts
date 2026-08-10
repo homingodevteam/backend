@@ -87,6 +87,9 @@ import { TokenService } from './services/token.service';
     CityScopeGuard,
     ActorTypeGuard,
     TokenService,
+    // Booking (module 4) reuses the same provider for the service-start OTP —
+    // one integration, one place to swap the vendor.
+    OTP_PROVIDER,
   ],
 })
 export class IdentityModule {}
