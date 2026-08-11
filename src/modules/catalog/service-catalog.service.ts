@@ -38,6 +38,11 @@ export function toPublicService(service: Service): PublicService {
     supportsScheduled: service.supportsScheduled,
     supportsRecurring: service.supportsRecurring,
     isActive: service.isActive,
+    // Public on purpose: the app has to know which payment modes to offer
+    // before the customer picks one, and `paymentMode` is frozen at creation.
+    // It says nothing about margin, so it is not in the same class as the two
+    // fields above it that are stripped.
+    allowsCash: service.allowsCash,
   };
 }
 
