@@ -215,14 +215,41 @@ POST /admin/areas/generate-grid
 Nothing to check afterwards. The cells cannot overlap and cannot leave holes —
 that is what the shape is for.
 
-**2 · Name it and trim it.** The generator has no idea what is on the ground,
-so ops renames the cells that matter and switches off the ones in farmland or
-a neighbouring district:
+**2 · Let the system work out what the cells are.**
 
 ```
-PATCH /admin/areas/{C3}  { "name": "Vijay Nagar" }
+POST /admin/areas/suggest-names?cityId=…
+→ { queued: 36, running: true }        returns immediately
+```
+
+The generator names cells `A1`…`F6` because it has no idea what is on the
+ground. Without this step an admin's only way to find out was to copy four
+coordinates into Google Maps, **thirty-six times per city** — which is not a
+workflow, it is the step where somebody mislabels a cell and discovers it when
+bookings go to the wrong Pros.
+
+So each cell's centre is reverse-geocoded and a name **suggested**. It runs in
+the background because the geocoder honours Nominatim's one-request-per-second
+policy — 36 cells is over half a minute, too long to hold a request open. Poll
+`GET /admin/areas/naming-progress`, or just re-read the list and watch the
+names fill in.
+
+Every area also now carries its **centre, its size in kilometres and a Google
+Maps link**, so a cell the geocoder could not name is still one click from
+being identified rather than four coordinates to transcribe.
+
+**3 · Review and trim.** Suggestions are suggestions:
+
+```
+PATCH /admin/areas/{C3}  { "name": "Vijay Nagar" }   → nameSource: manual
 PATCH /admin/areas/{F6}  { "isActive": false }
 ```
+
+`nameSource` tells you what still needs attention — `generated` is an
+unreviewed placeholder, `geocoded` a suggestion nobody has confirmed, `manual`
+a decision somebody made. **The naming pass only ever overwrites `generated`**,
+so it is safe to re-run and safe to run while someone is halfway through
+renaming.
 
 Deactivating is how you shape a square grid to a non-square city. A pin in a
 deactivated cell resolves to nothing, which is the honest answer.

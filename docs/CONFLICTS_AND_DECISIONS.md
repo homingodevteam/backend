@@ -71,6 +71,7 @@ Decisions here are binding. If one turns out wrong, change it here first.
 | 45  | Pro is a salaried employee; §8 says commission is the only pay     | 8        | Salary stays external — payroll's job. This system pays the variable part only                 |
 | 46  | A service sellable in an area nobody is staffed for                | 5/13     | Gate at config time, widen at run time. Two failures, two fixes                                |
 | 47  | The 60-minute travel cap was a guess refusing real customers       | 5        | Cap removed. Proximity decays instead; the city boundary is the only bound                     |
+| 48  | A generated grid is 36 squares nobody can identify                 | 13       | Reverse-geocode each centre into a suggestion; `nameSource` stops it clobbering a human        |
 
 ---
 
@@ -1309,6 +1310,53 @@ to an explanation instead of an absence.
 **Still true, and still the real limitation:** the estimate is crow-flight. A
 Pro across a river ranks better than the road says. Google Routes (module 13,
 instalment 2) is the fix; removing the cap does not pretend otherwise.
+
+---
+
+## 48 · A generated grid is thirty-six squares nobody can identify
+
+**Module 13 · Resolved 2026-08-11**
+
+`generateGrid` names cells by position — `A1`, `C3` — because it genuinely does
+not know what is on the ground. That was fine as a generator output and useless
+as a product: an admin's only route from `C3` to "Vijay Nagar" was copying four
+coordinates into Google Maps, **once per cell**, thirty-six times per city.
+
+That is not merely tedious. It is the step where somebody mislabels a cell, and
+the mislabelling only surfaces later as bookings going to the wrong Pros.
+
+**Decision: reverse-geocode each cell's centre into a suggestion**, using the
+adapter module 2 already has, and let the admin review rather than research.
+
+Three things make it safe:
+
+|              |                                                                                                                                                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nameSource` | `generated` \| `geocoded` \| `manual`. The pass **only ever overwrites `generated`**, so a suggestion can never clobber a name a person chose — and re-running it, or running it while someone is renaming, is safe |
+| `gridRef`    | The positional label kept **after** renaming. Ops keeps saying "cell C3" long after it became "Vijay Nagar", and a rename would otherwise destroy that shared reference                                             |
+| Background   | The geocoder honours Nominatim's one-request-per-second policy, so 36 cells is over half a minute. The route starts the pass and returns a count; holding a request open for that is not an option                  |
+
+A cell the geocoder cannot place **keeps its placeholder** rather than being
+given an invented name, and the next pass retries it. One unreachable cell does
+not abandon the other thirty-five.
+
+Every area also gained its **centre, size in kilometres and a Google Maps
+link** — all derived from the bounds, none stored. Four raw coordinates tell a
+human nothing; one click tells them everything. That half is cheap and works
+even when geocoding fails.
+
+**Consequence, and a boundary crossed:** `AddressGeocoderService` is now
+exported from module 2 and consumed by module 13. One adapter, one cache and
+one rate limiter shared — a second client would double the request rate against
+a service whose politeness policy is the entire reason that limiter exists.
+Longer term the adapter belongs _in_ module 13, which owns geography and is
+where the Google Places swap will land; exporting it was the smaller step.
+
+**Also:** the customer-facing "we are available in…" list now maps to a narrow
+`PublicAreaDto`. Publishing `AreaDto` there would tell a customer that "Vijay
+Nagar" is really cell C3 of a generated grid nobody has reviewed, and hand out
+the bounds of the entire service map. Conflict #34's rule, applied again: the
+mapper filters, the DTO documents.
 
 ---
 
