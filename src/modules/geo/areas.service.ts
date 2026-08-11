@@ -4,6 +4,7 @@ import type { Area, AreaService as AreaServiceRow } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   boxAreaSqKm,
+  boxCenter,
   boxDimensionsKm,
   boxesOverlap,
   expandBox,
@@ -180,7 +181,12 @@ export class AreasService {
         this.prisma.area.create({
           data: {
             cityId: input.cityId,
+            // The positional label is both the initial name and a permanent
+            // reference: ops keeps saying "cell C3" after it becomes "Vijay
+            // Nagar", and `gridRef` is what survives the rename.
             name: cell.name,
+            gridRef: cell.name,
+            nameSource: 'generated',
             minLat: cell.minLat,
             maxLat: cell.maxLat,
             minLng: cell.minLng,
@@ -232,7 +238,15 @@ export class AreasService {
       );
     }
 
-    return this.prisma.area.update({ where: { id }, data: input });
+    // A name a human typed is `manual` forever after. That is what makes the
+    // naming pass safe to re-run: it only ever touches `generated` rows, so it
+    // can never overwrite a decision somebody made.
+    const renamed = input.name !== undefined && input.name !== area.name;
+
+    return this.prisma.area.update({
+      where: { id },
+      data: { ...input, ...(renamed ? { nameSource: 'manual' } : {}) },
+    });
   }
 
   listForCity(cityId: string, includeInactive = false): Promise<Area[]> {
@@ -286,13 +300,38 @@ export class AreasService {
       .sort((a, b) => b.overlapSqKm - a.overlapSqKm);
   }
 
-  /** Height, width and centre — all derived, none stored. */
-  describe(area: Area) {
+  /**
+   * An area, plus everything derivable from its bounds that an admin needs to
+   * recognise it: centre, size, and a link that opens the spot in Google Maps.
+   *
+   * The map link is the cheap half of "which square is this?". Four raw
+   * coordinates tell a human nothing; one click tells them everything. The
+   * expensive half — a suggested name — is `AreaNamingService`.
+   *
+   * All derived, none stored. A rectangle already implies its centre, and a
+   * stored copy would be one more thing to keep in step when bounds move.
+   */
+  describe<T extends Area>(area: T) {
+    // Six decimals is ~11 cm — far finer than a 6 km cell needs, and it keeps
+    // float noise out of the payload. A midpoint of two stored floats lands on
+    // 22.686999999999998 often enough that an unrounded map link looks broken.
+    const centre = boxCenter(area);
+    const lat = Number(centre.lat.toFixed(6));
+    const lng = Number(centre.lng.toFixed(6));
+
     return {
+      ...area,
       ...boxDimensionsKm(area),
-      centerLat: (area.minLat + area.maxLat) / 2,
-      centerLng: (area.minLng + area.maxLng) / 2,
+      centerLat: lat,
+      centerLng: lng,
+      mapUrl: `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`,
     };
+  }
+
+  /** The list an admin reviews, each row ready to be recognised. */
+  async describeForCity(cityId: string, includeInactive = false) {
+    const areas = await this.listForCity(cityId, includeInactive);
+    return areas.map((area) => this.describe(area));
   }
 
   private async assertCityExists(cityId: string): Promise<void> {

@@ -287,8 +287,8 @@ export class LocationService {
    * Every area a service is live in — what the customer app lists when
    * someone asks "where do you do this?".
    */
-  listAreasForService(serviceId: string) {
-    return this.prisma.area.findMany({
+  async listAreasForService(serviceId: string) {
+    const areas = await this.prisma.area.findMany({
       where: {
         isActive: true,
         city: { isActive: true },
@@ -297,5 +297,15 @@ export class LocationService {
       include: { city: { select: { id: true, name: true } } },
       orderBy: [{ cityId: 'asc' }, { name: 'asc' }],
     });
+
+    // Mapped, not returned raw. A customer has no use for gridRef, nameSource
+    // or the bounds, and publishing them would expose that "Vijay Nagar" is
+    // really cell C3 of a grid nobody has reviewed (#34).
+    return areas.map((area) => ({
+      id: area.id,
+      name: area.name,
+      cityId: area.cityId,
+      cityName: area.city.name,
+    }));
   }
 }

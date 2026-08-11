@@ -5,6 +5,7 @@ import {
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AdminAreasController } from './../src/modules/geo/admin-areas.controller';
+import { AreaNamingService } from './../src/modules/geo/area-naming.service';
 import { AreasService } from './../src/modules/geo/areas.service';
 import { GeoController } from './../src/modules/geo/geo.controller';
 import { LocationService } from './../src/modules/geo/location.service';
@@ -50,6 +51,7 @@ describe('Geo Swagger contract (e2e)', () => {
       providers: [
         { provide: LocationService, useValue: {} },
         { provide: AreasService, useValue: {} },
+        { provide: AreaNamingService, useValue: {} },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -130,6 +132,8 @@ describe('Geo Swagger contract (e2e)', () => {
     ['/admin/areas/by-service/{serviceId}', 'post', 201],
     ['/admin/areas/{id}/pros', 'post', 201],
     ['/admin/areas/{id}/pros', 'get', 200],
+    ['/admin/areas/suggest-names', 'post', 201],
+    ['/admin/areas/naming-progress', 'get', 200],
   ];
 
   it.each([...PUBLIC_ROUTES, ...ADMIN_ROUTES])(
@@ -188,6 +192,32 @@ describe('Geo Swagger contract (e2e)', () => {
       // ...and no request body at all to smuggle one through.
       expect(operation.requestBody).toBeUndefined();
     }
+  });
+
+  /**
+   * The public "we are available in…" list must not publish the map's internal
+   * state. `gridRef` and `nameSource` would tell a customer that "Vijay Nagar"
+   * is really cell C3 of a generated grid nobody has reviewed — and the bounds
+   * would hand out the whole service map. Conflict #34's rule: the mapper
+   * filters, the DTO documents.
+   */
+  it('does not leak grid internals to the customer-facing area list', () => {
+    const schemas = document.components?.schemas as
+      Record<string, { properties?: Record<string, unknown> }> | undefined;
+
+    const publicArea = schemas?.PublicAreaDto?.properties ?? {};
+    expect(Object.keys(publicArea).sort()).toEqual([
+      'cityId',
+      'cityName',
+      'id',
+      'name',
+    ]);
+
+    // ...while the admin shape deliberately does carry them.
+    const adminArea = schemas?.AreaDto?.properties ?? {};
+    expect(adminArea).toHaveProperty('gridRef');
+    expect(adminArea).toHaveProperty('nameSource');
+    expect(adminArea).toHaveProperty('mapUrl');
   });
 
   it('requires lat and lng on both pin-driven reads', () => {

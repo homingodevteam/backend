@@ -276,6 +276,45 @@ export class AreaDto {
   @ApiProperty({ example: 75.9229, description: 'Eastern edge — exclusive.' })
   maxLng: number;
 
+  @ApiPropertyOptional({
+    example: 'C3',
+    nullable: true,
+    description:
+      'Grid position for a generated cell; null for a hand-drawn area. ' +
+      '**Survives renaming** — ops keeps saying "cell C3" long after it became ' +
+      '"Vijay Nagar".',
+  })
+  gridRef: string | null;
+
+  @ApiProperty({
+    enum: ['generated', 'geocoded', 'manual'],
+    description:
+      'Where `name` came from. `generated` is an unreviewed placeholder, ' +
+      '`geocoded` a suggestion awaiting review, `manual` a human decision — ' +
+      'and only `generated` rows are ever overwritten by the naming pass.',
+  })
+  nameSource: string;
+
+  @ApiProperty({ example: 22.7553, description: 'Derived from the bounds.' })
+  centerLat: number;
+
+  @ApiProperty({ example: 75.8937 })
+  centerLng: number;
+
+  @ApiProperty({ example: 6.01, description: 'North-south extent, km.' })
+  heightKm: number;
+
+  @ApiProperty({ example: 5.98, description: 'East-west extent, km.' })
+  widthKm: number;
+
+  @ApiProperty({
+    example: 'https://www.google.com/maps/search/?api=1&query=22.7553,75.8937',
+    description:
+      'Opens this cell’s centre in Google Maps. Four raw coordinates tell a ' +
+      'human nothing; one click tells them what is actually there.',
+  })
+  mapUrl: string;
+
   @ApiProperty()
   isActive: boolean;
 
@@ -284,6 +323,29 @@ export class AreaDto {
 
   @ApiProperty()
   updatedAt: Date;
+}
+
+/**
+ * The customer-facing shape of an area: what it is called and where.
+ *
+ * Deliberately **not** `AreaDto`. A customer reading "we are available in…"
+ * has no use for `gridRef`, `nameSource` or the bounds, and publishing them
+ * would expose that "Vijay Nagar" is really cell C3 of a generated grid whose
+ * name nobody has reviewed. Conflict #34's rule applies: the mapper filters,
+ * the DTO only documents.
+ */
+export class PublicAreaDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'Vijay Nagar' })
+  name: string;
+
+  @ApiProperty()
+  cityId: string;
+
+  @ApiProperty({ example: 'Indore' })
+  cityName: string;
 }
 
 export class ResolvedAreaDto {

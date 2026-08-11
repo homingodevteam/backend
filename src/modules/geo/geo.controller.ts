@@ -5,9 +5,9 @@ import {
   ApiOkEnvelope,
 } from '../../common/swagger/api-envelope.decorator';
 import {
-  AreaDto,
   LocationCatalogDto,
   LocationCatalogQueryDto,
+  PublicAreaDto,
   ResolveLocationQueryDto,
   ServiceabilityDto,
 } from './dto/area.dto';
@@ -80,9 +80,11 @@ export class GeoController {
     summary: 'Everywhere a service is live',
     description: 'For a "we are available in…" list. Active areas only.',
   })
-  @ApiOkEnvelope(AreaDto, { isArray: true })
+  @ApiOkEnvelope(PublicAreaDto, { isArray: true })
   @ApiErrorEnvelope(HttpStatus.BAD_REQUEST)
-  areasForService(@Param('serviceId') serviceId: string): Promise<AreaDto[]> {
+  areasForService(
+    @Param('serviceId') serviceId: string,
+  ): Promise<PublicAreaDto[]> {
     return this.location.listAreasForService(serviceId);
   }
 }
