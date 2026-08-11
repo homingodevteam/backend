@@ -7,6 +7,7 @@ import { AdminProsController } from './admin-pros.controller';
 import { KycDocumentsService } from './kyc-documents.service';
 import { ProApplicationsService } from './pro-applications.service';
 import { ProBankAccountsService } from './pro-bank-accounts.service';
+import { ProReviewsService } from './pro-reviews.service';
 import { ProServiceAssignmentsService } from './pro-service-assignments.service';
 import { ProsController } from './pros.controller';
 import { ProsService } from './pros.service';
@@ -32,6 +33,7 @@ import { ProProfilePhotoService } from './pro-profile-photo.service';
     ProsService,
     ProApplicationsService,
     ProBankAccountsService,
+    ProReviewsService,
     ProServiceAssignmentsService,
     KycDocumentsService,
     ProCountersService,

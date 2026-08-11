@@ -54,6 +54,9 @@ async function main(): Promise<void> {
       'booking.read',
       'booking.cancel',
       'dispatch.override',
+      // A one-star spree is a roster problem before it is a content problem,
+      // so ops can hide review text too — it never moves the score either way.
+      'pro.review.moderate',
     ],
     // Support handles the cases a customer cannot self-serve: a mid-job stop
     // (window E) and the door-step OTP override.
@@ -62,9 +65,11 @@ async function main(): Promise<void> {
       'booking.read',
       'booking.cancel',
       'booking.force_start',
+      'pro.review.moderate',
     ],
     // Commission rates are finance's call, not ops' — see US-3.10 / US-8.4.
-    finance: ['catalog.commission.set'],
+    // Bank details belong to the same owner for the same reason.
+    finance: ['catalog.commission.set', 'pro.bankAccount.verify'],
     super_admin: ALL_PERMISSION_CODES,
   } as const;
 

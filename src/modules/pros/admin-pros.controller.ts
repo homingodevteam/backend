@@ -16,7 +16,13 @@ import {
   ApiOkEnvelope,
 } from '../../common/swagger/api-envelope.decorator';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.type';
-import type { Pro, ProApplication, ProService } from '../../prisma/client';
+import type {
+  Pro,
+  ProApplication,
+  ProBankAccount,
+  ProService,
+  Review,
+} from '../../prisma/client';
 import { PermissionCode } from '../identity/constants/permission-code';
 import { RequirePermissions } from '../identity/decorators/require-permissions.decorator';
 import { CityScopedResource } from '../identity/decorators/city-scoped-resource.decorator';
@@ -29,14 +35,22 @@ import { AssignServiceDto } from './dto/assign-service.dto';
 import { BulkAvailabilityDto } from './dto/bulk-availability.dto';
 import { DocumentViewUrlResponseDto } from './dto/document-view-url-response.dto';
 import { ProApplicationDto } from './dto/pro-application.dto';
+import { ProBankAccountDto } from './dto/pro-bank-account.dto';
 import { ProServiceDto } from './dto/pro-service.dto';
 import { ProDto } from './dto/pro.dto';
+import { ReviewDto, SetReviewVisibilityDto } from './dto/review.dto';
 import { SetAvailabilityDto } from './dto/set-availability.dto';
+import { SetBankVerificationDto } from './dto/set-bank-verification.dto';
 import { SuspendProDto } from './dto/suspend-pro.dto';
 import { UpdateProServiceDto } from './dto/update-pro-service.dto';
 import { VerifyDocumentDto } from './dto/verify-document.dto';
 import { KycDocumentsService } from './kyc-documents.service';
-import { ProApplicationsService } from './pro-applications.service';
+import { ProBankAccountsService } from './pro-bank-accounts.service';
+import { ProReviewsService } from './pro-reviews.service';
+import {
+  ProApplicationsService,
+  type ProApplicationWithApplicant,
+} from './pro-applications.service';
 import { ProServiceAssignmentsService } from './pro-service-assignments.service';
 import { ProsService } from './pros.service';
 
@@ -50,6 +64,8 @@ export class AdminProsController {
     private readonly applicationsService: ProApplicationsService,
     private readonly serviceAssignmentsService: ProServiceAssignmentsService,
     private readonly kycDocumentsService: KycDocumentsService,
+    private readonly bankAccountsService: ProBankAccountsService,
+    private readonly reviewsService: ProReviewsService,
   ) {}
 
   // ----- Onboarding queue -----
@@ -62,7 +78,7 @@ export class AdminProsController {
   listApplications(
     @Query('status') status?: string,
     @CurrentUser() actor?: AuthenticatedUser,
-  ): Promise<ProApplication[]> {
+  ): Promise<ProApplicationWithApplicant[]> {
     return this.applicationsService.findAll(
       { queueStatus: status },
       actor?.cityScope,
@@ -240,6 +256,16 @@ export class AdminProsController {
 
   // ----- Service assignment -----
 
+  @Get('pros/:id/services')
+  @CityScopedResource('pro')
+  @RequirePermissions(PermissionCode.PRO_MODERATE)
+  @ApiOperation({ summary: "List a Pro's service assignments" })
+  @ApiOkEnvelope(ProServiceDto, { isArray: true })
+  @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.NOT_FOUND)
+  listServices(@Param('id') proId: string): Promise<ProService[]> {
+    return this.serviceAssignmentsService.list(proId);
+  }
+
   @Post('pros/:id/services')
   @CityScopedResource('pro')
   @RequirePermissions(PermissionCode.PRO_MODERATE)
@@ -267,5 +293,67 @@ export class AdminProsController {
     @Body() dto: UpdateProServiceDto,
   ): Promise<ProService> {
     return this.serviceAssignmentsService.update(proId, serviceId, dto);
+  }
+
+  // ----- Payout destinations -----
+
+  @Get('pros/:id/bank-accounts')
+  @CityScopedResource('pro')
+  @RequirePermissions(PermissionCode.PRO_BANK_VERIFY)
+  @ApiOperation({ summary: "List a Pro's payout destinations" })
+  @ApiOkEnvelope(ProBankAccountDto, { isArray: true })
+  @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.NOT_FOUND)
+  listBankAccounts(@Param('id') proId: string): Promise<ProBankAccount[]> {
+    return this.bankAccountsService.list(proId);
+  }
+
+  @Patch('pros/:id/bank-accounts/:accountId/verification')
+  @CityScopedResource('pro')
+  @RequirePermissions(PermissionCode.PRO_BANK_VERIFY)
+  @ApiOperation({ summary: 'Vouch for (or withdraw) a payout destination' })
+  @ApiOkEnvelope(ProBankAccountDto)
+  @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.NOT_FOUND)
+  setBankVerification(
+    @Param('id') proId: string,
+    @Param('accountId') accountId: string,
+    @Body() dto: SetBankVerificationDto,
+  ): Promise<ProBankAccount> {
+    return this.bankAccountsService.setVerified(
+      proId,
+      accountId,
+      dto.isVerified,
+    );
+  }
+
+  // ----- Reviews -----
+
+  @Get('pros/:id/reviews')
+  @CityScopedResource('pro')
+  @RequirePermissions(PermissionCode.PRO_REVIEW_MODERATE)
+  @ApiOperation({ summary: "Reviews left on a Pro's completed jobs" })
+  @ApiOkEnvelope(ReviewDto, { isArray: true })
+  @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.NOT_FOUND)
+  listReviews(@Param('id') proId: string): Promise<Review[]> {
+    return this.reviewsService.listForPro(proId);
+  }
+
+  @Patch('pros/:id/reviews/:reviewId/visibility')
+  @CityScopedResource('pro')
+  @RequirePermissions(PermissionCode.PRO_REVIEW_MODERATE)
+  @ApiOperation({
+    summary: "Hide or restore a review's text — never its star rating",
+  })
+  @ApiOkEnvelope(ReviewDto)
+  @ApiErrorEnvelope(
+    HttpStatus.FORBIDDEN,
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.NOT_FOUND,
+  )
+  setReviewVisibility(
+    @Param('id') proId: string,
+    @Param('reviewId') reviewId: string,
+    @Body() dto: SetReviewVisibilityDto,
+  ): Promise<Review> {
+    return this.reviewsService.setVisibility(proId, reviewId, dto);
   }
 }

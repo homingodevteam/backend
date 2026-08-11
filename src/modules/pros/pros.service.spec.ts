@@ -58,7 +58,9 @@ describe('ProsService', () => {
       });
       const service = buildService(deps);
 
-      await expect(service.suspend('p1', {}, 'admin-1')).rejects.toMatchObject({
+      await expect(
+        service.suspend('p1', { reason: 'no-show' }, 'admin-1'),
+      ).rejects.toMatchObject({
         response: expect.objectContaining({ statusCode: 409 }),
       });
       expect(deps.prisma.pro.update).not.toHaveBeenCalled();
@@ -76,9 +78,29 @@ describe('ProsService', () => {
       });
       const service = buildService(deps);
 
-      const result = await service.suspend('p1', {}, 'admin-1');
+      const result = await service.suspend(
+        'p1',
+        { reason: 'repeated no-shows' },
+        'admin-1',
+      );
 
       expect(result.status).toBe('suspended');
+    });
+
+    it('refuses to suspend without a reason', async () => {
+      const deps = buildDeps();
+      deps.prisma.pro.findUnique.mockResolvedValue({
+        id: 'p1',
+        status: 'approved',
+      });
+      const service = buildService(deps);
+
+      await expect(
+        service.suspend('p1', { reason: '  ' }, 'admin-1'),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ statusCode: 400 }),
+      });
+      expect(deps.prisma.pro.update).not.toHaveBeenCalled();
     });
 
     it('requires explicit handling when a live booking exists', async () => {
@@ -92,7 +114,9 @@ describe('ProsService', () => {
       ]);
       const service = buildService(deps);
 
-      await expect(service.suspend('p1', {}, 'admin-1')).rejects.toMatchObject({
+      await expect(
+        service.suspend('p1', { reason: 'under investigation' }, 'admin-1'),
+      ).rejects.toMatchObject({
         response: expect.objectContaining({ statusCode: 409 }),
       });
       expect(deps.prisma.pro.update).not.toHaveBeenCalled();

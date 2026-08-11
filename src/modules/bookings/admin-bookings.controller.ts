@@ -23,6 +23,7 @@ import { PermissionsGuard } from '../identity/guards/permissions.guard';
 import { BookingCancellationService } from './booking-cancellation.service';
 import { BookingLifecycleService } from './booking-lifecycle.service';
 import { BookingsService } from './bookings.service';
+import { AdminBookingQueryDto } from './dto/admin-booking-query.dto';
 import { AdminCancelBookingDto } from './dto/cancel-booking.dto';
 import { BookingDto } from './dto/booking.dto';
 import { AssignProDto, ForceStartDto } from './dto/lifecycle.dto';
@@ -39,6 +40,26 @@ export class AdminBookingsController {
     private readonly cancellation: BookingCancellationService,
     private readonly plans: RecurringPlansService,
   ) {}
+
+  @Get()
+  @RequirePermissions(PermissionCode.BOOKING_READ)
+  @ApiOperation({
+    summary: 'List bookings',
+    description:
+      'Newest first, capped at 100 rather than paginated — same shape as the ' +
+      'other admin list endpoints in this codebase. Filter by status, ' +
+      'customer or Pro; omit all three to see everything recent.\n\n' +
+      "City-scoped via the delivery address's city — the job's actual " +
+      "location, not the customer's other saved addresses.",
+  })
+  @ApiOkEnvelope(BookingDto, { isArray: true })
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
+  list(
+    @Query() query: AdminBookingQueryDto,
+    @CurrentUser() actor?: AuthenticatedUser,
+  ): Promise<Booking[]> {
+    return this.bookings.listForAdmin(query, actor?.cityScope);
+  }
 
   @Get(':id')
   @RequirePermissions(PermissionCode.BOOKING_READ)

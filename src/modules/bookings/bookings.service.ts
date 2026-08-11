@@ -168,6 +168,39 @@ export class BookingsService {
     });
   }
 
+  /**
+   * The admin listing this module launched without — support and ops had no
+   * way to browse bookings at all, only look one up by an id they already
+   * had. Same shape as the other admin list endpoints in this codebase:
+   * optional filters, newest first, capped rather than paginated.
+   *
+   * `allowedCityIds` mirrors ProsService.findMany's pattern. Booking has no
+   * direct cityId; scope is applied via the delivery address's city, since
+   * that is where the job actually happens (not the customer's other saved
+   * addresses, which may span cities the customer has lived in).
+   */
+  listForAdmin(
+    query: {
+      status?: BookingStatus;
+      customerId?: string;
+      proId?: string;
+    },
+    allowedCityIds?: string[],
+  ): Promise<Booking[]> {
+    return this.prisma.booking.findMany({
+      where: {
+        status: query.status,
+        customerId: query.customerId,
+        proId: query.proId,
+        ...(allowedCityIds?.length && {
+          address: { cityId: { in: allowedCityIds } },
+        }),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
   listLiveForCustomer(customerId: string): Promise<Booking[]> {
     return this.prisma.booking.findMany({
       where: { customerId, status: { in: LIVE_STATUSES } },

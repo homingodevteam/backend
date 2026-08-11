@@ -1,5 +1,44 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+export class ApplicantCityDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty()
+  state: string;
+}
+
+/** Just enough of Pro for a reviewer to identify who they're looking at. */
+export class ApplicantSummaryDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  phone: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  fullName: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  employeeCode: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Self-reported home base — never collected by the application form itself',
+  })
+  addressLine: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  cityId: string | null;
+
+  @ApiPropertyOptional({ type: ApplicantCityDto, nullable: true })
+  city: ApplicantCityDto | null;
+}
+
 /** Swagger-only mirror of the Prisma ProApplication model — see prisma/schema.prisma. */
 export class ProApplicationDto {
   @ApiProperty()
@@ -7,6 +46,9 @@ export class ProApplicationDto {
 
   @ApiProperty()
   proId: string;
+
+  @ApiProperty({ type: ApplicantSummaryDto })
+  pro: ApplicantSummaryDto;
 
   @ApiProperty({ enum: ['pro', 'customer', 'none'] })
   referredByType: string;

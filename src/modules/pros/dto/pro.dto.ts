@@ -56,6 +56,15 @@ export class ProDto {
   status: string;
 
   @ApiPropertyOptional({ nullable: true })
+  suspendedReason: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  suspendedAt: Date | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  suspendedByAdminId: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
   approvedApplicationId: string | null;
 
   @ApiProperty({ description: 'Admin-set only, never by the Pro' })

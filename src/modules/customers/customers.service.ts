@@ -4,6 +4,7 @@ import type { Customer, CustomerAddress, Prisma } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TokenService } from '../identity/services/token.service';
 import { AddressLocationService } from './address-location.service';
+import { AdminCustomerQueryDto } from './dto/admin-customer-query.dto';
 import { CreateAddressDto } from './dto/create-address.dto';
 import { CustomerProfileDto } from './dto/customer-profile.dto';
 import { UpdateAddressDto } from './dto/update-address.dto';
@@ -25,6 +26,68 @@ export class CustomersService {
 
   async getProfile(id: string): Promise<CustomerProfileDto> {
     return this.toProfile(await this.getById(id));
+  }
+
+  /**
+   * The admin listing this module launched without — support had no way to
+   * find a customer at all, only block/unblock one by an id they already
+   * had from somewhere else. Same shape as the other admin list endpoints:
+   * optional filters, newest first, capped rather than paginated.
+   *
+   * `allowedCityIds` mirrors ProsService.findMany's pattern — Customer has
+   * no direct cityId, so scope is applied via "has at least one address in
+   * an allowed city." A customer scoped only to a since-changed city they
+   * no longer have an address in would drop off a scoped admin's list; that
+   * edge case is accepted rather than solved here, same tradeoff the Pro
+   * roster's cityId-based scoping already makes implicitly.
+   */
+  listForAdmin(
+    query: AdminCustomerQueryDto,
+    allowedCityIds?: string[],
+  ): Promise<Customer[]> {
+    const where: Prisma.CustomerWhereInput = {
+      status: query.status,
+      isBlocked: query.isBlocked,
+      ...(query.search && {
+        OR: [
+          { phone: { contains: query.search, mode: 'insensitive' } },
+          { email: { contains: query.search, mode: 'insensitive' } },
+          { fullName: { contains: query.search, mode: 'insensitive' } },
+        ],
+      }),
+      ...(allowedCityIds?.length && {
+        addresses: { some: { cityId: { in: allowedCityIds } } },
+      }),
+    };
+
+    return this.prisma.customer.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
+  /**
+   * As close to the "customer 360" support's primary screen wants (US-15.4)
+   * as the modules built so far allow — bookings and orders/refunds/tickets
+   * don't have that data source yet, but bookings do now, so they're
+   * included alongside the addresses that already existed here.
+   */
+  async getAdminDetail(id: string): Promise<
+    Customer & {
+      addresses: CustomerAddress[];
+      bookings: Prisma.BookingGetPayload<object>[];
+    }
+  > {
+    const customer = await this.prisma.customer.findUnique({
+      where: { id },
+      include: {
+        addresses: { orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }] },
+        bookings: { orderBy: { createdAt: 'desc' }, take: 20 },
+      },
+    });
+    if (!customer) throw new NotFoundException('Customer not found');
+    return customer;
   }
 
   async updateProfile(

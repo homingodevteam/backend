@@ -159,6 +159,7 @@ model AdminUser {
   platformSettingsUpdated      PlatformSetting[]
   overriddenBookings           Booking[]          @relation("BookingOverrideAdmin")
   approvedCommissionPayouts    CommissionPayout[] @relation("PayoutApprover")
+  suspendedPros                Pro[]              @relation("ProSuspender")
 
   @@map("admin_users")
 }
@@ -272,6 +273,13 @@ model Pro {
   salaryUpdatedAt DateTime?
 
   status String @default("applied")
+
+  /// Why the Pro was last suspended. Retained after reinstatement so the
+  /// moderation history survives — cleared only by the next suspension.
+  suspendedReason       String?
+  suspendedAt           DateTime?
+  suspendedByAdminId    String?    @db.Uuid
+  suspendedByAdmin      AdminUser? @relation("ProSuspender", fields: [suspendedByAdminId], references: [id], onDelete: SetNull)
 
   approvedApplicationId String?         @unique @db.Uuid
   approvedApplication   ProApplication? @relation("ApprovedApplication", fields: [approvedApplicationId], references: [id], onDelete: SetNull)

@@ -182,12 +182,13 @@ export class ProsService {
         })),
       );
     }
-    if (liveBookings.length > 0 && !dto.reason?.trim()) {
+    if (!dto.reason?.trim()) {
       throw apiError(
-        'reason is required when handling live bookings during suspension',
+        'reason is required to suspend a Pro',
         HttpStatus.BAD_REQUEST,
       );
     }
+    const reason = dto.reason.trim();
 
     const updated = await this.prisma.$transaction(async (tx) => {
       for (const booking of liveBookings) {
@@ -201,11 +202,11 @@ export class ProsService {
                 proId: null,
                 assignmentOutcome: 'ops_reassigned',
                 overriddenByAdminId: actingAdminId,
-                overrideReason: dto.reason!.trim(),
+                overrideReason: reason,
               }
             : {
                 overriddenByAdminId: actingAdminId,
-                overrideReason: dto.reason!.trim(),
+                overrideReason: reason,
               },
         });
         await tx.bookingStatusEvent.create({
@@ -224,6 +225,9 @@ export class ProsService {
           status: 'suspended',
           isAvailable: false,
           availabilityUpdatedAt: new Date(),
+          suspendedReason: reason,
+          suspendedAt: new Date(),
+          suspendedByAdminId: actingAdminId,
         },
       });
     });

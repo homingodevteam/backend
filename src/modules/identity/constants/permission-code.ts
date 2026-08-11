@@ -10,6 +10,19 @@ export const PermissionCode = {
   PRO_APPLICATION_REVIEW: 'pro.application.review',
   PRO_MODERATE: 'pro.moderate',
   PRO_AVAILABILITY_SET: 'pro.availability.set',
+  /**
+   * Reading and vouching for a Pro's payout destination. Separate from
+   * PRO_MODERATE because it is finance's call, not ops': the account details
+   * only matter when money leaves, and an ops admin editing a roster should
+   * not see or bless them as a side effect.
+   */
+  PRO_BANK_VERIFY: 'pro.bankAccount.verify',
+  /**
+   * Hiding a customer's review text. Content moderation, not Pro management —
+   * and deliberately narrow: hiding never changes the star rating (see
+   * ProReviewsService), so this cannot be used to launder a Pro's score.
+   */
+  PRO_REVIEW_MODERATE: 'pro.review.moderate',
   CATALOG_MANAGE: 'catalog.manage',
   /**
    * Deliberately separate from CATALOG_MANAGE: repricing a service and

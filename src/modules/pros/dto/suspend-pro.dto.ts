@@ -1,5 +1,11 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsBoolean,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 export class SuspendProDto {
   @ApiPropertyOptional({
@@ -11,11 +17,11 @@ export class SuspendProDto {
   @IsBoolean()
   confirmLiveBookingHandling?: boolean;
 
-  @ApiPropertyOptional({
-    description: 'Required when confirming handling of live bookings',
+  @ApiProperty({
+    description: 'Persisted on the Pro as the moderation record',
   })
-  @IsOptional()
   @IsString()
+  @IsNotEmpty()
   @MaxLength(500)
-  reason?: string;
+  reason: string;
 }

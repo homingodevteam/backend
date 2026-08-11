@@ -1,11 +1,31 @@
 import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
-import type { ProApplication } from '../../prisma/client';
+import type { Prisma, ProApplication } from '../../prisma/client';
 import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ApplicationDecisionDto } from './dto/application-decision.dto';
 import { SubmitProApplicationDto } from './dto/submit-pro-application.dto';
 import { VerifyDocumentDto } from './dto/verify-document.dto';
 import { ProsService } from './pros.service';
+
+/**
+ * Just enough of Pro for a reviewer to identify who they're looking at.
+ * Address and city ride along because the application form itself never
+ * collects them: without these the reviewer approves a Pro and then has to
+ * assign a city with no idea where the applicant is actually based.
+ */
+const APPLICANT_SELECT = {
+  id: true,
+  phone: true,
+  fullName: true,
+  employeeCode: true,
+  addressLine: true,
+  cityId: true,
+  city: { select: { id: true, name: true, state: true } },
+} satisfies Prisma.ProSelect;
+
+export type ProApplicationWithApplicant = ProApplication & {
+  pro: Prisma.ProGetPayload<{ select: typeof APPLICANT_SELECT }>;
+};
 
 @Injectable()
 export class ProApplicationsService {
@@ -120,10 +140,16 @@ export class ProApplicationsService {
     });
   }
 
+  /**
+   * `include: { pro }` is the fix for a real gap: the admin console had no
+   * way to show whose application this is — just a bare proId — because
+   * this query never joined it. Selected fields only; the Pro row carries
+   * far more than an onboarding reviewer needs.
+   */
   findAll(
     filters: { queueStatus?: string },
     allowedCityIds?: string[],
-  ): Promise<ProApplication[]> {
+  ): Promise<ProApplicationWithApplicant[]> {
     return this.prisma.proApplication.findMany({
       where: {
         ...(filters.queueStatus ? { queueStatus: filters.queueStatus } : {}),
@@ -131,13 +157,18 @@ export class ProApplicationsService {
           ? { pro: { cityId: { in: allowedCityIds } } }
           : {}),
       },
+      include: { pro: { select: APPLICANT_SELECT } },
       orderBy: { submittedAt: 'asc' },
+      // A safety cap, matching every other admin list in this codebase —
+      // this query previously had none.
+      take: 200,
     });
   }
 
-  private async getOrThrow(id: string): Promise<ProApplication> {
+  private async getOrThrow(id: string): Promise<ProApplicationWithApplicant> {
     const application = await this.prisma.proApplication.findUnique({
       where: { id },
+      include: { pro: { select: APPLICANT_SELECT } },
     });
     if (!application) throw new NotFoundException('Application not found');
     return application;
