@@ -30,6 +30,21 @@ export const PermissionCode = {
   BOOKING_FORCE_START: 'booking.force_start',
   /** Manual assignment from the live dispatch screen. */
   DISPATCH_OVERRIDE: 'dispatch.override',
+  /** Reading orders, the live attempt list and the reconciliation report. */
+  PAYMENT_READ: 'payment.read',
+  /**
+   * Sending money back to a customer. Deliberately separate from
+   * `BOOKING_CANCEL`, which decides *what is owed* — an ops admin cancelling a
+   * job should not be able to move money out of the platform as a side effect
+   * of that decision. Module 4 computes the amount; this grant executes it.
+   */
+  PAYMENT_REFUND: 'payment.refund',
+  /**
+   * Counting a Pro's cash and clearing their balance. The second half of the
+   * only two-person control in the cash flow, so it is its own grant: whoever
+   * confirms a handover must not be the person who declared it.
+   */
+  CASH_HANDOVER_CONFIRM: 'payment.cash.handover.confirm',
 } as const;
 
 export type PermissionCode =
