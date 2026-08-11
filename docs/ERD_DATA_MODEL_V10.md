@@ -137,6 +137,56 @@ City [icon: map, color: green] {
   isActive boolean
 }
 
+// ---------------------------------------------------------
+// SERVICE AREAS  (added 2026-08-11, not in Eraser v10)
+// ---------------------------------------------------------
+// Three tables the ERD does not have. Recorded here so the diagram and the
+// database do not silently diverge — see CONFLICTS_AND_DECISIONS #42.
+//
+// Before them, "can this customer book this service" had ONE answer:
+// City.isActive. A city was open or shut and every service in it was equally
+// available everywhere, which cannot express what the business does.
+//
+// An Area is an axis-aligned RECTANGLE — no PostGIS, no circles. The shape is
+// the point: rectangles TILE. A generated grid covers a city with no gaps and
+// no overlap by construction, which is why there is no coverage-sampling
+// machinery here. The whole geometry question lives in one function, so a
+// polygon column can replace this later.
+//
+// BOUNDS ARE HALF-OPEN: min <= value < max. Adjacent cells share an edge
+// exactly (one cell's maxLat IS its neighbour's minLat, the same float), so a
+// pin on that edge resolves to precisely one cell instead of two or none.
+
+Area [icon: grid, color: green] {
+  id string pk
+  cityId string fk
+  name string // "Vijay Nagar", or "A1" until an admin renames a generated cell
+  minLat float // inclusive
+  maxLat float // exclusive
+  minLng float // inclusive
+  maxLng float // exclusive
+  isActive boolean
+}
+
+// Availability ONLY. Price stays national and per-service: there are still no
+// per-area price rows, and Booking.flatPrice is snapshotted from Service.
+AreaService [icon: check-square, color: green] {
+  id string pk
+  areaId string fk
+  serviceId string fk
+  isActive boolean
+}
+
+// Where a Pro is posted. A FILTER on dispatch, never the ranking — distance
+// and travel time still order candidates, and a Pro posted to Vijay Nagar may
+// physically be anywhere while travelling.
+ProArea [icon: user-check, color: orange] {
+  id string pk
+  proId string fk
+  areaId string fk
+  isActive boolean
+}
+
 ServiceCategory [icon: layers, color: green] {
   id string pk
   parentCategoryId string fk // null = top-level category
@@ -172,6 +222,10 @@ Booking [icon: clipboard, color: purple] {
   customerId string fk
   serviceId string fk
   addressId string fk
+  areaId string fk // added 2026-08-11 (#42). FROZEN at creation like flatPrice:
+                   // areas get redrawn and this must keep saying where the job
+                   // was sold. Null on bookings predating areas, and on a pin
+                   // that resolved to none.
   bookingType string // instant | scheduled | recurring
   recurringPlanId string fk
   rebookedFromBookingId string fk // one-tap re-book
@@ -755,6 +809,16 @@ NotificationLog [icon: bell, color: yellow] {
 Customer.id < CustomerAddress.customerId
 City.id < CustomerAddress.cityId
 City.id < Pro.cityId
+
+// -- Service areas (added 2026-08-11, not in Eraser v10 — see #42)
+// Note there is deliberately NO CustomerAddress.areaId: it would be a cache
+// nothing maintains, and Booking re-resolves from the pin anyway.
+City.id < Area.cityId
+Area.id < AreaService.areaId
+Service.id < AreaService.serviceId
+Area.id < ProArea.areaId
+Pro.id < ProArea.proId
+Area.id < Booking.areaId
 
 // -- Catalog & skill matching
 ServiceCategory.id < ServiceCategory.parentCategoryId

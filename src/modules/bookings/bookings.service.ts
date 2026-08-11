@@ -9,6 +9,10 @@ import { BookingStateService } from './booking-state.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { DISPATCH_PORT, type DispatchPort } from './ports/dispatch.port';
 import { PAYMENTS_PORT, type PaymentsPort } from './ports/payments.port';
+import {
+  SERVICEABILITY_PORT,
+  type ServiceabilityPort,
+} from './ports/serviceability.port';
 
 /** Statuses that mean the booking is still live work rather than history. */
 const LIVE_STATUSES: BookingStatus[] = [
@@ -30,6 +34,8 @@ export class BookingsService {
     private readonly customers: CustomersService,
     @Inject(DISPATCH_PORT) private readonly dispatch: DispatchPort,
     @Inject(PAYMENTS_PORT) private readonly payments: PaymentsPort,
+    @Inject(SERVICEABILITY_PORT)
+    private readonly serviceability: ServiceabilityPort,
   ) {}
 
   // ------------------------------------------------------------------
@@ -106,6 +112,28 @@ export class BookingsService {
       );
     }
 
+    // The area gate, from the address's own pin — never from anything the
+    // client sent. `checkServiceability` above answered the city question;
+    // this answers the finer one, "is this service live at this pin", and
+    // returns the area to freeze onto the booking.
+    //
+    // It re-resolves rather than reading `address.areaId`, because areas can
+    // be redrawn between saving an address and booking against it.
+    const { areaId } = await this.serviceability.resolveForBooking({
+      lat: address.pinLat,
+      lng: address.pinLng,
+      serviceId: service.id,
+      cityId: address.cityId,
+    });
+
+    // Both cash gates, enforced server-side because `paymentMode` is frozen
+    // the moment the row below is written and no route can change it after.
+    // The port answers permissively until module 7 registers, so cash keeps
+    // working on a deployment with no gateway configured.
+    if (dto.paymentMode === 'cash') {
+      await this.payments.assertCashAllowed(service.id, address.cityId);
+    }
+
     const slotStartAt = dto.slotStartAt ?? new Date();
     const slotEndAt = new Date(
       slotStartAt.getTime() + service.durationMinutes * 60_000,
@@ -117,6 +145,9 @@ export class BookingsService {
         customerId,
         serviceId: service.id,
         addressId: address.id,
+        // Frozen like flatPrice: areas get redrawn, and this booking must
+        // keep saying where it was taken.
+        areaId,
         bookingType,
         slotStartAt,
         slotEndAt,

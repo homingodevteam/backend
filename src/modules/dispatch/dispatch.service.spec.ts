@@ -34,7 +34,13 @@ function buildDeps() {
   };
   const state = { transition: jest.fn(), recordEvent: jest.fn() };
   const counters = { recordOffer: jest.fn(), recordAcknowledgement: jest.fn() };
-  return { prisma, redis, scoring, state, counters };
+  // Module 7's cash ceiling. Nobody is over it by default, so every existing
+  // expectation about who is eligible is unchanged.
+  const cash = { blockedProIds: jest.fn().mockResolvedValue([]) };
+  // Module 13's area posting. `null` means "nobody posted, so do not filter",
+  // which leaves every existing expectation about eligibility unchanged.
+  const areas = { proIdsForArea: jest.fn().mockResolvedValue(null) };
+  return { prisma, redis, scoring, state, counters, cash, areas };
 }
 
 function build(deps: ReturnType<typeof buildDeps>): DispatchService {
@@ -44,6 +50,8 @@ function build(deps: ReturnType<typeof buildDeps>): DispatchService {
     deps.scoring as never,
     deps.state as never,
     deps.counters as never,
+    deps.cash as never,
+    deps.areas as never,
   );
 }
 
@@ -124,6 +132,62 @@ describe('DispatchService', () => {
       const result = await dispatch.run('bk-1');
 
       expect(result.outcome).toBe('exhausted');
+    });
+
+    /**
+     * Module 13's area posting is a FILTER on the pool. Distance, rotation and
+     * smoothed rating still do the ranking — this only narrows who is in it.
+     */
+    it('restricts the pool to Pros posted to the booking’s area', async () => {
+      const deps = buildDeps();
+      deps.prisma.booking.findUnique.mockResolvedValue({
+        ...assigningBooking,
+        areaId: 'area-vn',
+      });
+      deps.areas.proIdsForArea.mockResolvedValue(['pro-1', 'pro-2']);
+      const dispatch = build(deps);
+
+      await dispatch.run('bk-1');
+
+      expect(deps.scoring.findEligiblePros).toHaveBeenCalledWith(
+        'svc-1',
+        'city-1',
+        [],
+        ['pro-1', 'pro-2'],
+      );
+    });
+
+    /**
+     * The distinction that keeps a configuration gap from masquerading as a
+     * supply gap: nobody posted means no filter, not "exclude everyone".
+     */
+    it('does not filter when nobody is posted to the area', async () => {
+      const deps = buildDeps();
+      deps.prisma.booking.findUnique.mockResolvedValue({
+        ...assigningBooking,
+        areaId: 'area-vn',
+      });
+      deps.areas.proIdsForArea.mockResolvedValue(null);
+      const dispatch = build(deps);
+
+      await dispatch.run('bk-1');
+
+      expect(deps.scoring.findEligiblePros).toHaveBeenCalledWith(
+        'svc-1',
+        'city-1',
+        [],
+        null,
+      );
+    });
+
+    it('does not ask about areas for a booking that has none', async () => {
+      const deps = buildDeps();
+      deps.prisma.booking.findUnique.mockResolvedValue(assigningBooking);
+      const dispatch = build(deps);
+
+      await dispatch.run('bk-1');
+
+      expect(deps.areas.proIdsForArea).not.toHaveBeenCalled();
     });
 
     it('stops after the configured attempt ceiling', async () => {

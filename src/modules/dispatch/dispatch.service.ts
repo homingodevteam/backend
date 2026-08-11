@@ -4,6 +4,8 @@ import type { AssignmentCandidate } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { BookingStateService } from '../bookings/booking-state.service';
+import { AreasService } from '../geo/areas.service';
+import { CashEligibilityService } from '../payments/cash-eligibility.service';
 import { ProCountersService } from '../pros/pro-counters.service';
 import { DispatchScoringService } from './dispatch-scoring.service';
 import type { AssignmentOutcome, ScoredCandidate } from './dispatch.types';
@@ -40,6 +42,8 @@ export class DispatchService {
     private readonly scoring: DispatchScoringService,
     private readonly state: BookingStateService,
     private readonly counters: ProCountersService,
+    private readonly cash: CashEligibilityService,
+    private readonly areas: AreasService,
   ) {}
 
   // ------------------------------------------------------------------
@@ -142,9 +146,29 @@ export class DispatchService {
       return this.closeUnassignable(bookingId, attemptNumber, 'exhausted', 0);
     }
 
+    // Module 7's cash ceiling. Cash bookings only: a Pro over the limit is
+    // still offered online work, and only a confirmed handover clears them.
+    const overCashCeiling =
+      booking.paymentMode === 'cash'
+        ? await this.cash.blockedProIds(booking.address.cityId)
+        : [];
+
+    // Module 13's area posting — a FILTER, never the ranking. Distance and
+    // travel time still order whoever survives it.
+    //
+    // `null` means nobody is posted to this area *at all*, which is a
+    // configuration gap rather than a supply gap: applying an empty list would
+    // exclude every Pro in the city and report `no_supply` for a city that
+    // simply has not had its Pros posted yet. So no posting means no filter.
+    const postedToArea = booking.areaId
+      ? await this.areas.proIdsForArea(booking.areaId)
+      : null;
+
     const eligible = await this.scoring.findEligiblePros(
       booking.serviceId,
       booking.address.cityId,
+      overCashCeiling,
+      postedToArea,
     );
 
     // Nobody holds this service here at all. A structural supply gap, not a

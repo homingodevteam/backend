@@ -22,41 +22,52 @@ Decisions here are binding. If one turns out wrong, change it here first.
 
 ## Index
 
-| #   | Conflict                                                           | Module | Resolution                                                                                   |
-| --- | ------------------------------------------------------------------ | ------ | -------------------------------------------------------------------------------------------- |
-| 1   | `CustomerAddress.deliveryNotes`                                    | 2      | Removed — ERD has `landmark` only                                                            |
-| 2   | Administrative audit trail                                         | all    | Deferred; `AdminAuditLog` dropped                                                            |
-| 3   | DigiLocker KYC                                                     | 6      | Excluded — manual S3 + human review only                                                     |
-| 4   | Pro status lifecycle missing `rejected`                            | 6      | `rejected` added                                                                             |
-| 5   | Suspended Pro — `401` or `403`?                                    | 1/6    | `403`                                                                                        |
-| 6   | "International format" phone accepted national numbers             | 1      | Canonicalise Indian mobiles to E.164                                                         |
-| 7   | Duration → commission tiers                                        | 3      | **Cancelled** — duration feeds Dispatch only                                                 |
-| 8   | "Per-city activation"                                              | 3      | Means `City.isActive`, not per-city services                                                 |
-| 9   | Catalog edits "audited"                                            | 3      | No attribution at all — deferred with #2 and #14                                             |
-| 10  | Category tree depth unspecified                                    | 3      | Two levels, enforced                                                                         |
-| 11  | Price snapshotting with no `Booking` price column                  | 3/4    | Deferred to module 4; catalog exposes price                                                  |
-| 12  | `Decimal` money serialises as a string                             | 3/6/8  | Accepted and documented, not coerced                                                         |
-| 13  | `Service.allowsCash` named by a ground rule, absent from ERD       | 3      | Not added — ERD wins; cash gates on `Booking.paymentMode`                                    |
-| 14  | Editor attribution on catalog rows                                 | 3      | Dropped — ERD has no such column                                                             |
-| 15  | Catalog field names: plan vs ERD                                   | 3      | ERD names used verbatim                                                                      |
-| 16  | Timestamps absent from the ERD, present everywhere in the schema   | all    | House convention kept                                                                        |
-| 17  | US-3.4 creates a service "with commission" in one step             | 3      | Two calls — commission is a separate permission                                              |
-| 18  | "Actual duration is the number commission is calculated from"      | 4      | **Cancelled** — reporting only, like #7                                                      |
-| 19  | Coordinates: ERD `decimal`, codebase `Float`                       | 2/4/6  | `Float` kept; ERD deviation recorded, not fixed piecemeal                                    |
-| 20  | Feature 8's linear state list vs the cash ground rule              | 4      | Real state machine; payment mode forks it                                                    |
-| 21  | Recurring pricing — at plan creation or at generation?             | 4      | At generation                                                                                |
-| 22  | Rebook vs rotation                                                 | 4      | Rotation wins; lineage recorded, Pro never pinned                                            |
-| 23  | When does chat close?                                              | 4      | Writes close 24h after completion; reads never                                               |
-| 24  | Is the customer charged when not home?                             | 4      | Not automated — ops decides                                                                  |
-| 25  | The OTP-at-the-door override                                       | 4      | Audited ops force-start, visibly distinct on the timeline                                    |
-| 26  | Cancellation windows are a proposal, not policy                    | 4      | Mechanics built; every number in `PlatformSetting`                                           |
-| 27  | `Booking.expectedDurationMinutes` proposed but not in the ERD      | 4      | Not added — derived from the slot window instead                                             |
-| 28  | Invoice tax: added to the price, or contained within it?           | 4      | Within — the customer sees one number only                                                   |
-| 29  | Rule 2 needs travel time; Geo & Routing does not exist             | 5      | `TravelTimePort` + haversine — ranks, but never quotes an ETA                                |
-| 30  | "Redis-queued intake" with no worker process                       | 5      | Real Redis list; drained by an admin route. The lock, not the trigger, is what makes it safe |
-| 31  | US-5.5 supply gap vs US-5.10 exhaustion                            | 5      | Two outcomes — `no_supply` and `exhausted`                                                   |
-| 32  | Module 5 cannot re-bind module 4's `DISPATCH_PORT`                 | 4/5    | The port is a delegate module 5 registers into                                               |
-| 33  | `ProCountersService` methods duplicated work their callers now own | 5/6    | Counters own only counters; the caller owns the transition                                   |
+| #   | Conflict                                                           | Module   | Resolution                                                                                     |
+| --- | ------------------------------------------------------------------ | -------- | ---------------------------------------------------------------------------------------------- |
+| 1   | `CustomerAddress.deliveryNotes`                                    | 2        | Removed — ERD has `landmark` only                                                              |
+| 2   | Administrative audit trail                                         | all      | Deferred; `AdminAuditLog` dropped                                                              |
+| 3   | DigiLocker KYC                                                     | 6        | Excluded — manual S3 + human review only                                                       |
+| 4   | Pro status lifecycle missing `rejected`                            | 6        | `rejected` added                                                                               |
+| 5   | Suspended Pro — `401` or `403`?                                    | 1/6      | `403`                                                                                          |
+| 6   | "International format" phone accepted national numbers             | 1        | Canonicalise Indian mobiles to E.164                                                           |
+| 7   | Duration → commission tiers                                        | 3        | **Cancelled** — duration feeds Dispatch only                                                   |
+| 8   | "Per-city activation"                                              | 3        | Means `City.isActive`, not per-city services                                                   |
+| 9   | Catalog edits "audited"                                            | 3        | No attribution at all — deferred with #2 and #14                                               |
+| 10  | Category tree depth unspecified                                    | 3        | Two levels, enforced                                                                           |
+| 11  | Price snapshotting with no `Booking` price column                  | 3/4      | Deferred to module 4; catalog exposes price                                                    |
+| 12  | `Decimal` money serialises as a string                             | 3/6/8    | Accepted and documented, not coerced                                                           |
+| 13  | `Service.allowsCash` named by a ground rule, absent from ERD       | 3        | ~~Not added~~ — **reversed by #37**; the column now exists                                     |
+| 14  | Editor attribution on catalog rows                                 | 3        | Dropped — ERD has no such column                                                               |
+| 15  | Catalog field names: plan vs ERD                                   | 3        | ERD names used verbatim                                                                        |
+| 16  | Timestamps absent from the ERD, present everywhere in the schema   | all      | House convention kept                                                                          |
+| 17  | US-3.4 creates a service "with commission" in one step             | 3        | Two calls — commission is a separate permission                                                |
+| 18  | "Actual duration is the number commission is calculated from"      | 4        | **Cancelled** — reporting only, like #7                                                        |
+| 19  | Coordinates: ERD `decimal`, codebase `Float`                       | 2/4/6    | `Float` kept; ERD deviation recorded, not fixed piecemeal                                      |
+| 20  | Feature 8's linear state list vs the cash ground rule              | 4        | Real state machine; payment mode forks it                                                      |
+| 21  | Recurring pricing — at plan creation or at generation?             | 4        | At generation                                                                                  |
+| 22  | Rebook vs rotation                                                 | 4        | Rotation wins; lineage recorded, Pro never pinned                                              |
+| 23  | When does chat close?                                              | 4        | Writes close 24h after completion; reads never                                                 |
+| 24  | Is the customer charged when not home?                             | 4        | Not automated — ops decides                                                                    |
+| 25  | The OTP-at-the-door override                                       | 4        | Audited ops force-start, visibly distinct on the timeline                                      |
+| 26  | Cancellation windows are a proposal, not policy                    | 4        | Mechanics built; every number in `PlatformSetting`                                             |
+| 27  | `Booking.expectedDurationMinutes` proposed but not in the ERD      | 4        | Not added — derived from the slot window instead                                               |
+| 28  | Invoice tax: added to the price, or contained within it?           | 4        | Within — the customer sees one number only                                                     |
+| 29  | Rule 2 needs travel time; Geo & Routing does not exist             | 5        | `TravelTimePort` + haversine — ranks, but never quotes an ETA                                  |
+| 30  | "Redis-queued intake" with no worker process                       | 5        | Real Redis list; drained by an admin route. The lock, not the trigger, is what makes it safe   |
+| 31  | US-5.5 supply gap vs US-5.10 exhaustion                            | 5        | Two outcomes — `no_supply` and `exhausted`                                                     |
+| 32  | Module 5 cannot re-bind module 4's `DISPATCH_PORT`                 | 4/5      | The port is a delegate module 5 registers into                                                 |
+| 33  | `ProCountersService` methods duplicated work their callers now own | 5/6      | Counters own only counters; the caller owns the transition                                     |
+| 34  | A DTO documents the response; it does not filter it                | 3        | Customer-facing reads go through an explicit mapper                                            |
+| 35  | Cash has no store of record anywhere in the ERD                    | 7        | Four columns and one table added; `Pro.cashInHand` is a cache, not the ledger                  |
+| 36  | `paymentStatus = paid` means two different things                  | 7        | Kept, and every reader must read `paymentMode` beside it. Four consequences accepted           |
+| 37  | `Service.allowsCash` — reopening #13                               | 3/7      | **#13 reversed.** City gate as a setting, service gate as a column, both server-side           |
+| 38  | Webhook HMAC needs bytes; Fastify had already parsed them          | all      | `rawBody: true` in `main.ts` — a shared-file change for one module's benefit                   |
+| 39  | The global ValidationPipe would 400 every webhook                  | 1/7      | The webhook takes no DTO. Third-party payloads are not ours to whitelist                       |
+| 40  | Idempotency with no table to hold event ids                        | 7        | Convergent writes + forward-only status. Redis is a fast path correctness ignores              |
+| 41  | A valid signature is not a successful payment                      | 7        | Verify, then fetch from the gateway and assert status, order and amount                        |
+| 42  | Serviceability was city-wide; the business is area-wide            | 3/13     | `Area` + `AreaService` added. **Rectangles**, half-open bounds, gapless generated grid         |
+| 43  | A mandatory gate that can only reject, added to a live product     | 13       | Ships **off** per city; the area is recorded anyway so the evidence to enable it accrues first |
+| 44  | The proposed plan contradicted four shipped decisions              | 4/5/6/13 | All four kept: nine states, Redis GEO, `Pro` naming, no accept/reject (already true)           |
 
 ---
 
@@ -294,7 +305,12 @@ Clients must not `parseFloat` a total for display or arithmetic.
 
 ## 13 · `Service.allowsCash` — named by a ground rule, absent from the ERD
 
-**Module 3 · Resolved 2026-08-10**
+**Module 3 · Resolved 2026-08-10 · SUPERSEDED BY [#37](#37--serviceallowscash--reopening-13) on 2026-08-11**
+
+> The decision below stood for one day and is now reversed. It is kept in full
+> rather than edited, because the reasoning was right at the time and the thing
+> that changed was not the ERD — it was that module 7 arrived and made the
+> consequence real. Read #37 for what actually happens now.
 
 The **Cash** ground rule names the column outright:
 
@@ -762,6 +778,402 @@ the _schema_ is right, not the _payload_. Any future endpoint that must withhold
 a field needs a mapper and a test that inspects a real response body — which is
 precisely what cURL testing caught and what unit tests, which mock the layer
 below, structurally cannot.
+
+---
+
+## 35 · Cash is named as its own store of record, and the ERD has nowhere to put it
+
+**Module 7 · Resolved 2026-08-11**
+
+The module 7 mode table is explicit about where cash lives:
+
+> | Cash | `cash` | After completion, at the door | **`Booking.cashCollectedAmount`** |
+
+and features 13–16 name three more things: `cashCollectedAt`,
+`Pro.cashInHand`, and a handover with two actors and two timestamps.
+
+**ERD v10 contains none of them.** Its `Booking` block ends at
+`cancellationFeeAmount` / `refundedAmount`. Its `Pro` block has `monthlySalary`
+and nothing about cash. There is no handover table. The only trace of the whole
+concept anywhere in the ERD is a comment on `LedgerEntry.debitAccount`:
+`cash_in_hand:<proId>`.
+
+**Decision:** add all four. The precedence rule still holds — this is not the
+ERD losing, it is the ERD being silent about a mechanism the ground rules
+describe in detail.
+
+The distinction from #13 is what makes this consistent rather than convenient.
+#13 declined a **gate** that `Booking.paymentMode` already expressed; these are
+**storage** with no alternative expression:
+
+| Added                                            | Why nothing else can hold it                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------ |
+| `Booking.cashCollectedAmount`, `cashCollectedAt` | The named store of record. Without it, cash has none               |
+| `Booking.cashDeclinedAt`, `cashDeclinedReason`   | Feature 17 needs unpaid-completion distinguishable from unrecorded |
+| `Pro.cashInHand`                                 | Feature 16 gates dispatch on it, per candidate                     |
+| `CashHandover`                                   | Declare → confirm is two actors and two timestamps                 |
+
+**`Pro.cashInHand` is a cache of the ledger, not the ledger.** It has exactly
+the relationship to `Booking` that `Pro.completedJobs` already does, and the
+same failure mode — it drifts, and a nightly rebuild is what makes it
+authoritative. It exists as a column only because dispatch cannot afford a
+ledger aggregate per candidate.
+
+**Consequence:** four columns and a table that no ERD diagram shows, which is a
+real cost when the next person reads the ERD as the map. Mitigated by keeping
+the ERD's own vocabulary (`cash_in_hand:<proId>` is the account name module 9
+will post to) and by feature 18's reconciliation, which is the check that the
+cache still agrees with the bookings behind it.
+
+---
+
+## 36 · `paymentStatus = paid` means two different things
+
+**Module 7 · Resolved 2026-08-11 · accepted, not fixed**
+
+For an online booking, `paid` means the platform has the money. For a cash
+booking, it means **an employee is carrying banknotes**. The module 7 feature
+list states this plainly and does not resolve it, and neither do we.
+
+**Decision:** keep the single column. Splitting it into `paymentStatus` plus a
+`custodian` would be more honest and would touch module 4's state machine,
+module 8's commission trigger and every report — for a distinction that
+`paymentMode`, sitting in the same row, already carries.
+
+**The four consequences, accepted explicitly:**
+
+1. **No `Order` row for cash.** Any report joining `Order` silently
+   undercounts every cash booking. The most likely bug this module can cause,
+   and the reason `GET /admin/orders` says so in its own description.
+2. **`paid` is not custody.** Financial reporting must read `paymentMode`
+   alongside it. There is no way to enforce this in code; it is a rule readers
+   have to know, which is why it is written on the column, the DTO and the
+   admin route.
+3. **Cancellation fees are uncollectable on cash.** No instrument, no balance.
+   Late cancellation is free for a cash customer and costs a Pro their travel
+   each time. Module 4 already computes the fee; for cash there is nothing to
+   charge it against, and no attempt is made to net it off a future job.
+4. **Handover is the only thing that clears a balance.** Commission never
+   offsets it (feature 15), so a Pro who stops handing over accumulates
+   indefinitely. Two operational numbers carry the whole risk — the ceiling
+   and the handover cadence.
+
+**What we did about (4):** the ceiling is now
+`payments.cashInHandCeilingAmount` (default ₹10,000, city-scoped) and is
+enforced — a Pro over it stops receiving cash work. **The cadence is still
+undefined and is not enforced anywhere.** Nothing chases a Pro who simply never
+declares a handover; the ceiling caps the exposure per Pro but does not
+recover it. That is the one part of this feature that remains genuinely open.
+
+---
+
+## 37 · `Service.allowsCash` — reopening #13
+
+**Modules 3 + 7 · Resolved 2026-08-11 · reverses #13**
+
+#13 declined the column one day earlier and said why: the ERD wins, and
+per-service cash gating does not exist in the data model. It also wrote its own
+appeal route —
+
+> If per-service or per-city cash control is genuinely wanted, that is an ERD
+> change plus a **module 7 (Payments) decision**, not something module 3 can
+> smuggle in.
+
+This is that decision.
+
+**What changed is not the ERD.** It is that #35 and #36 made the cost of cash
+concrete: an uncollectable cancellation fee, a Pro carrying banknotes to a
+ceiling, and no way to recover a balance except in person. Those costs scale
+with the price of the job. A ₹4,999 deep clean and a ₹599 AC service are not
+the same risk, and `Booking.paymentMode` cannot express the difference because
+it is set per booking, by the customer, after the decision has already been
+made for them.
+
+**Decision:** both gates, both server-side, and deliberately not the same
+mechanism.
+
+| Gate        | Mechanism                                   | Why that one                                                                                                                                   |
+| ----------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per city    | `payments.cashEnabled` in `PlatformSetting` | Zero schema. `PlatformSettingsService` already resolves city over global, and ops can close cash in a city during an incident without a deploy |
+| Per service | `Service.allowsCash` column, default `true` | Seven `payments.cashEnabled.service.<id>` rows would be a worse database than one boolean                                                      |
+
+The column ships in **its own migration** (`20260811120100_add_service_allows_cash`)
+so it can be dropped whole — schema, migration and the guard that reads it —
+without unpicking the rest of module 7.
+
+`allowsCash` is returned by `toPublicService`, unlike `commissionType` and
+`commissionValue` (#34). It says nothing about margin, and the app has to know
+which modes to offer _before_ the customer picks one, because `paymentMode` is
+frozen at creation.
+
+**Consequence:** `services` is a module 3 table and this is a module 7 change to
+it — a coordination event under the ownership rule, not a unilateral edit. If
+the catalogue owner would rather it did not exist, the fallback is the city
+gate alone, which is enforceable and honest; feature 11 then degrades to
+city-scoped and this section records that it did.
+
+---
+
+## 38 · The webhook HMAC needs the exact bytes; Fastify had already parsed them
+
+**All modules · Resolved 2026-08-11**
+
+Razorpay signs each webhook with an HMAC-SHA256 over the **bytes it delivered**.
+`main.ts` created the app with no raw body, so the only thing a handler could
+verify against was the parsed object re-serialised.
+
+That does not work, and it fails in the worst possible way. `JSON.parse` →
+`JSON.stringify` does not round-trip key order, unicode escaping or whitespace.
+Verification would succeed whenever V8's serialisation happened to match
+Razorpay's and fail when it did not — intermittently, unreproducibly, on the
+code path that decides whether a customer has paid.
+
+**Decision:** `NestFactory.create(..., { rawBody: true })`.
+
+**Consequence:** a shared-file change made for one module's benefit, which is
+exactly the kind of edit the ownership rule says to isolate. It is one option
+in one call, commented with its single reason, and it is inert for every other
+route — nothing else in the codebase reads `request.rawBody`. There is a spec
+that fails if it is ever removed: the webhook service rejects a delivery with
+no raw body rather than falling back to the parsed one.
+
+---
+
+## 39 · The global `ValidationPipe` would reject every webhook
+
+**Modules 1 + 7 · Resolved 2026-08-11**
+
+`VALIDATION_PIPE_OPTIONS` sets `whitelist` and `forbidNonWhitelisted`, and
+`API_CONVENTIONS.md` §3 is explicit that this is deliberate — "a typo'd field
+fails loudly instead of looking like it saved".
+
+That reasoning holds for bodies we designed. Razorpay's webhook payload is a
+deep object of **their** fields, versioned by them, and it grows. Applying
+`forbidNonWhitelisted` to it means their next release 400s every delivery, and
+because a 4xx is not retried, the payments those deliveries carried are lost
+until someone notices.
+
+**Decision:** the webhook endpoint takes **no DTO**. It reads the raw body,
+verifies the HMAC, then parses and narrows only the four fields it uses.
+
+The same reasoning explicitly does **not** extend to
+`POST /bookings/:id/payment/verify`. That body is ours — three known fields —
+and validates normally, including a regex on the signature.
+
+**Consequence:** one endpoint in the API is unvalidated at the framework level,
+so its parsing is hand-written and its types are hand-narrowed. The safety it
+gives up is real; what replaces it is that nothing is trusted anyway — the HMAC
+runs before the parse, and a malformed payload is acknowledged and ignored
+rather than throwing.
+
+---
+
+## 40 · Idempotent webhooks, with no table to hold event ids
+
+**Module 7 · Resolved 2026-08-11**
+
+Feature 5 requires duplicate deliveries to be safe. The obvious implementation
+is a `WebhookEvent` table keyed on Razorpay's event id — and it is the one
+thing this module is built not to have. The stated trade-off is:
+
+> In exchange, there is **no local copy of payment data** to drift out of sync
+> with the gateway.
+
+A table of every event they ever sent us is precisely that copy.
+
+**Decision:** idempotency by construction, in three parts, with Redis as an
+optimisation that correctness does not use.
+
+1. **Convergent writes.** `capturedPaymentId`, `paymentMethod`, `amountPaid`
+   and `paidAt` are all read from the event payload or from the row itself —
+   never from the clock. Replaying a capture five times produces a
+   byte-identical row.
+2. **Forward-only status.** `advanceStatus` is a max, not an assignment.
+   Razorpay does not guarantee ordering and `payment.captured` regularly
+   arrives before `payment.authorized`; without this, that pair alone would
+   leave a genuinely paid order at `attempted` — money taken, nothing
+   dispatched.
+3. **Capture written once.** A second, _different_ payment id against a paid
+   order is a duplicate-charge signal. It is logged at error level and
+   refused, never applied, and reconciliation surfaces it. Overwriting would
+   erase the only evidence.
+
+Redis `setIfAbsent` short-circuits the common redelivery before any query runs.
+When Redis is unreachable the event is processed anyway — processing twice is
+safe by (1)–(3); not processing leaves a paid booking undispatched.
+
+**Consequence:** every future write in this module must be convergent, and
+nothing enforces that but review. The side effects that genuinely must run once
+— the booking transition, dispatch, the ledger entry — are gated on
+`isForwardStatus`, which is the one place that rule is visible.
+
+---
+
+## 41 · A valid signature is not a successful payment
+
+**Module 7 · Resolved 2026-08-11**
+
+Feature 3 says the server must verify the signature before treating a payment
+as successful, and it is easy to read that as sufficient. It is not.
+
+A Razorpay checkout signature is an HMAC over `order_id|payment_id`. It proves
+Razorpay produced that pair. It says nothing about:
+
+- whether the payment was **captured** or merely authorized;
+- **how much** was paid;
+- which **order** it was actually against;
+
+and it is **replayable** by the client that legitimately received it — the
+attack being a customer who paid for booking A and posts their own valid
+signature against booking B.
+
+**Decision:** the signature is a precondition, not a proof. After it passes,
+the server fetches the payment from Razorpay by id and refuses unless
+`status === 'captured'`, `order_id` matches, and the amount equals the order's
+to the paisa. Only then does anything move. The webhook remains the authority;
+verify exists so the customer sees their booking dispatch immediately rather
+than waiting on a delivery.
+
+**Consequence:** every successful checkout costs one extra gateway round trip,
+and a slow Razorpay makes the customer wait. Accepted — the webhook completes
+the booking regardless if this call is missed entirely, so the cost is latency
+on the happy path and nothing on the failure path. There are four specs on
+this, one per way a signed payment can still be unusable.
+
+---
+
+## 42 · Serviceability was city-wide; the business is area-wide
+
+**Modules 3 + 13 · Resolved 2026-08-11 · geometry revised the same day**
+
+Conflict #8 settled that "per-city activation" meant `City.isActive` and not
+per-city services, and #11 left pricing national. Both were right, and together
+they left exactly one lever: a city is open or shut, and every service in it is
+equally available everywhere in it.
+
+The business does not work that way. It operates neighbourhood by
+neighbourhood, and "AC repair in Vijay Nagar but not Rau" was **inexpressible**
+— not hard, not unmodelled, impossible.
+
+**Decision:** add `Area`, `AreaService` and `ProArea`, none of which exist in
+ERD v10. `Booking.areaId` joins them, frozen at creation.
+
+### The geometry: rectangles, after a false start with circles
+
+> **This was built as circles first, then changed.** The original brief
+> specified `centerLatitude`, `centerLongitude`, `radiusKm` and haversine, and
+> that is what shipped. It is recorded here rather than quietly rewritten,
+> because the reason for the change is the most useful thing in this section.
+
+An area is an axis-aligned **rectangle**: `minLat`, `maxLat`, `minLng`,
+`maxLng`. Not PostGIS — the entire geometry question is confined to one
+function (`LocationService.resolveArea`), so a `geography(Polygon)` column can
+replace it later without a single caller changing.
+
+**Why the shape changed.** The brief also said areas "should ideally not
+overlap", and that is impossible with circles: **circles cannot tile a plane.**
+Disjoint circles leave wedge-shaped gaps between them where real customers
+live. The circle build managed this — overlap deliberately, resolve ties by
+nearest centre, sample for gaps with a coverage endpoint — and it worked, but
+every part of it was machinery for a problem the shape had created.
+
+Rectangles do not have the problem. A grid **tiles exactly**, so:
+
+|                  | Circles                                           | Rectangles                  |
+| ---------------- | ------------------------------------------------- | --------------------------- |
+| Gaps and overlap | Inherent; managed by nearest-centre and a sampler | Absent by construction      |
+| Resolution       | Load every active area, haversine each            | **One indexed range query** |
+| Coverage         | Sampled, approximate                              | Guaranteed by the generator |
+| Tiebreak         | Always needed                                     | Only for hand-edits         |
+
+**Bounds are half-open: `min <= value < max`.** This is the detail that makes
+tiling work, and it is not incidental. Adjacent cells share an edge _exactly_ —
+one cell's `maxLat` is bit-identical to its neighbour's `minLat`, because the
+generator derives both from the same origin and step. With closed bounds a pin
+on that edge matches two cells; with half-open bounds it matches precisely one.
+There is a spec that asserts this by sweeping points across a generated grid
+and requiring at most one match.
+
+Overlap's meaning inverted with the shape. It used to be healthy; it is now a
+**warning** that a hand-edit broke the partition, which is what
+`GET /admin/areas/:id/overlaps` reports. It should be empty. Touching edges do
+not count — adjacent cells share them by design.
+
+Where a hand-drawn map does produce two matches, the **smallest box wins** —
+"the most specific answer" — with the id as a final tiebreak so the result is
+stable rather than merely usually-stable. That also makes a useful pattern
+possible on purpose: a precise box inside a larger fallback.
+
+`haversineKm` survives the change and moved to this module, because dispatch
+still ranks candidates by distance. It simply no longer decides which area a
+pin is in.
+
+**Consequence:** three tables the ERD diagram does not show, recorded in
+`ERD_DATA_MODEL_V10.md` under a dated heading so the two do not silently
+diverge. And a second lever on availability, which means "why can't this
+customer book?" now has two possible answers instead of one — the API returns
+`LOCATION_NOT_SERVICEABLE` and `SERVICE_NOT_AVAILABLE_IN_AREA` separately for
+exactly that reason.
+
+**Deliberately not added:** `CustomerAddress.areaId`. It would be a cache of
+`resolveArea(pinLat, pinLng)` that nothing maintains — the customers module
+cannot reach module 13 without a dependency cycle, and booking re-resolves from
+the pin regardless, because areas get redrawn after an address is saved. The app
+asks `GET /geo/serviceability` before saving, which answers the same question
+without a column that can go stale.
+
+---
+
+## 43 · A mandatory gate that can only reject, added to a live product
+
+**Module 13 · Resolved 2026-08-11**
+
+The area check is the first rule in this codebase whose _only_ possible effect
+is to refuse a booking that would previously have succeeded. Every other gate
+added so far either created something (`Order`) or narrowed a set that was
+already narrowed (dispatch eligibility).
+
+Shipping it enabled would have rejected **every booking in every city** on
+deploy. Not because the rule is wrong — because no areas are drawn yet, so no
+pin resolves to one, so every booking fails a check that is technically working
+perfectly.
+
+**Decision:** `geo.enforceAreaServiceAvailability`, city-scoped, default
+`false`. While it is off, the area is still **resolved and recorded on the
+booking**, and every would-be rejection is logged with its reason.
+
+The intended sequence is: ship off → ops maps a city → read the log to see what
+the gate _would_ have refused there → flip that city's row to `true` → the gate
+becomes real in that city and nowhere else.
+
+**Consequence:** for a period, `Booking.areaId` is populated by a rule that
+cannot enforce itself, and a booking can exist for a service its area does not
+list. That is the intended state, not a gap — the alternative was a flag day
+where the map has to be perfect and complete before anything works at all. The
+same reasoning governs the `NoOpServiceabilityService` stub, which is permissive
+for identical reasons rather than by omission.
+
+---
+
+## 44 · The proposed area plan contradicted four shipped decisions
+
+**Modules 4, 5, 6, 13 · Resolved 2026-08-11**
+
+The plan that introduced service areas also proposed, in passing, four changes
+to things already built and working. Recorded here because each was considered
+and rejected on its merits, not overlooked.
+
+| Proposed                                                                                | Decision                                                                                                                                                                                                                           |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Replace the 9-state booking machine with `PENDING → ASSIGNED → IN_PROGRESS → COMPLETED` | **Rejected.** Deletes `awaiting_payment` (module 7's fork), `en_route`/`arrived` (what tracking and the no-start window key off) and `assigning` vs `assigned` (#31). Its real point — no `ACCEPTED`/`REJECTED` — was already true |
+| "Do NOT use Redis GEO"                                                                  | **Rejected.** Already load-bearing in three modules: the Pro location ingest, dispatch scoring's origin lookup, and the customer's live pin. The plan's own §10 asks for exactly what it already provides                          |
+| New `Employee` / `EmployeeService` entities                                             | **Rejected.** These are `Pro` and `ProService`. Only `EmployeeArea` was new, and it landed as `ProArea`                                                                                                                            |
+| Employees must not accept/reject or set their own availability                          | **Already true.** Module 5 has no accept/decline at any depth, and `setAvailability` exists only on the admin controller                                                                                                           |
+
+**Consequence:** the vocabulary in the product documents ("employee") and the
+vocabulary in the schema (`Pro`) differ, deliberately. Renaming six tables and
+every `/pros/me/*` route to close a naming gap would be pure churn; the docs can
+say "employee" while the code says `Pro`, as they already do.
 
 ---
 

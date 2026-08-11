@@ -87,14 +87,32 @@ export class DispatchScoringService {
    *
    * All three gates are admin-set. An empty result here is a **supply gap**,
    * not a dispatch failure — the caller reports it as `no_supply` (US-5.5).
+   *
+   * `excludeProIds` is module 7's cash ceiling, and it is passed in rather
+   * than queried here so this module never learns what a cash balance is. It
+   * applies **only to cash bookings** — a Pro over the ceiling keeps receiving
+   * online work, because carrying cash the platform asked them to carry is not
+   * a reason to stop paying them (module 7, feature 16).
+   *
+   * `restrictToProIds` is module 13's area posting, passed in for the same
+   * reason. `null` means *do not filter* — nobody is posted to that area, or
+   * the booking has no area — and is deliberately different from `[]`, which
+   * would exclude everyone.
    */
-  findEligiblePros(serviceId: string, cityId: string | null): Promise<Pro[]> {
+  findEligiblePros(
+    serviceId: string,
+    cityId: string | null,
+    excludeProIds: string[] = [],
+    restrictToProIds: string[] | null = null,
+  ): Promise<Pro[]> {
     return this.prisma.pro.findMany({
       where: {
         status: 'approved',
         isAvailable: true,
         ...(cityId ? { cityId } : {}),
         services: { some: { serviceId, isActive: true } },
+        ...(excludeProIds.length ? { id: { notIn: excludeProIds } } : {}),
+        ...(restrictToProIds ? { id: { in: restrictToProIds } } : {}),
       },
       take: 200,
     });

@@ -57,6 +57,8 @@ async function main(): Promise<void> {
       // A one-star spree is a roster problem before it is a content problem,
       // so ops can hide review text too — it never moves the score either way.
       'pro.review.moderate',
+      // Ops counts the cash a Pro hands back; ops cannot refund a customer.
+      'payment.cash.handover.confirm',
     ],
     // Support handles the cases a customer cannot self-serve: a mid-job stop
     // (window E) and the door-step OTP override.
@@ -66,10 +68,18 @@ async function main(): Promise<void> {
       'booking.cancel',
       'booking.force_start',
       'pro.review.moderate',
+      // Support answers "where is my money" and needs to see an order and its
+      // attempts. It cannot send money back.
+      'payment.read',
     ],
     // Commission rates are finance's call, not ops' — see US-3.10 / US-8.4.
-    // Bank details belong to the same owner for the same reason.
-    finance: ['catalog.commission.set', 'pro.bankAccount.verify'],
+    // Bank details and money leaving the platform are the same kind of call.
+    finance: [
+      'catalog.commission.set',
+      'pro.bankAccount.verify',
+      'payment.read',
+      'payment.refund',
+    ],
     super_admin: ALL_PERMISSION_CODES,
   } as const;
 
@@ -244,8 +254,98 @@ async function seedCatalog(): Promise<void> {
     });
   }
 
+  await seedIndoreAreas(services.map((service) => service.id));
+
   console.log(
     `Seeded ${cities.length} cities, ${categories.length} categories and ${services.length} services.`,
+  );
+}
+
+/**
+ * Four Indore areas as a **tiled 2×2 block of ~6 km cells**.
+ *
+ * Note what these are not: they do not overlap, and they do not leave gaps
+ * between them. Each cell's northern edge is the next cell's southern edge —
+ * the *same number*, not a near-miss — which is exactly what the half-open
+ * bounds rely on. A pin on the boundary resolves to precisely one cell.
+ *
+ * The names are real neighbourhoods so the fixtures read sensibly, but the
+ * geometry is a grid, which is what the generator produces and what ops then
+ * renames. See CONFLICTS_AND_DECISIONS #42.
+ *
+ * Every service is on in every area **except** Rau, which is deliberately left
+ * without the deep clean — so there is a working example of
+ * `SERVICE_NOT_AVAILABLE_IN_AREA` to develop and demo against rather than a
+ * uniformly-available map that makes the whole feature look inert.
+ */
+async function seedIndoreAreas(serviceIds: string[]): Promise<void> {
+  const INDORE = '00000000-0000-4000-9000-000000000001';
+  const DEEP_CLEAN = '00000000-0000-4000-b000-000000000001';
+
+  // A 2×2 grid of ~6 km cells around central Indore. Shared edges are written
+  // once as constants so the tiling is exact rather than approximately right.
+  const LAT_S = 22.66;
+  const LAT_MID = 22.714; // 6 km north of LAT_S
+  const LAT_N = 22.768;
+  const LNG_W = 75.8;
+  const LNG_MID = 75.858; // ~6 km east of LNG_W at this latitude
+  const LNG_E = 75.916;
+
+  const areas = [
+    {
+      id: '00000000-0000-4000-c000-000000000001',
+      name: 'Vijay Nagar',
+      minLat: LAT_MID,
+      maxLat: LAT_N,
+      minLng: LNG_MID,
+      maxLng: LNG_E,
+    },
+    {
+      id: '00000000-0000-4000-c000-000000000002',
+      name: 'Rajwada',
+      minLat: LAT_MID,
+      maxLat: LAT_N,
+      minLng: LNG_W,
+      maxLng: LNG_MID,
+    },
+    {
+      id: '00000000-0000-4000-c000-000000000003',
+      name: 'Palasia',
+      minLat: LAT_S,
+      maxLat: LAT_MID,
+      minLng: LNG_MID,
+      maxLng: LNG_E,
+    },
+    {
+      id: '00000000-0000-4000-c000-000000000004',
+      name: 'Rau',
+      minLat: LAT_S,
+      maxLat: LAT_MID,
+      minLng: LNG_W,
+      maxLng: LNG_MID,
+    },
+  ];
+
+  for (const area of areas) {
+    const data = { ...area, cityId: INDORE, isActive: true };
+    await prisma.area.upsert({
+      where: { id: area.id },
+      update: data,
+      create: data,
+    });
+
+    for (const serviceId of serviceIds) {
+      const isActive = !(area.name === 'Rau' && serviceId === DEEP_CLEAN);
+      await prisma.areaService.upsert({
+        where: { areaId_serviceId: { areaId: area.id, serviceId } },
+        update: { isActive },
+        create: { areaId: area.id, serviceId, isActive },
+      });
+    }
+  }
+
+  console.log(
+    `Seeded ${areas.length} tiled Indore areas (deep clean off in Rau, for a working unavailable case).`,
   );
 }
 
