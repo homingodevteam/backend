@@ -33,9 +33,110 @@ model City {
   addresses        CustomerAddress[]
   pros             Pro[]
   platformSettings PlatformSetting[]
+  areas            Area[]
 
   @@index([isActive])
   @@map("cities")
+}
+
+/// A city subdivision — the unit service availability is defined against.
+///
+/// An axis-aligned **rectangle** in lat/lng, not a circle and not a polygon.
+/// The shape is the whole point: rectangles **tile**. A generated grid covers a
+/// city with no gaps and no overlap, which removes the entire class of problem
+/// a circle model has to manage. See CONFLICTS_AND_DECISIONS #42.
+///
+/// **Bounds are half-open: `min <= value < max`.** That is what makes a pin
+/// landing exactly on a shared edge belong to exactly one cell instead of two
+/// or none, and floating-point coordinates land on shared edges more often
+/// than intuition suggests, because adjacent cells are generated from the same
+/// arithmetic.
+///
+/// Resolution is a plain indexed range query — no trigonometry, no loading
+/// every area into memory. `haversineKm` still exists for dispatch's
+/// travel-time ranking; it is simply not what decides an area any more.
+///
+/// Deliberately not PostGIS. The whole geometry question is confined to one
+/// function (`resolveArea`), so a `geography(Polygon)` column can replace this
+/// later without any caller changing.
+model Area {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cityId String @db.Uuid
+  city   City   @relation(fields: [cityId], references: [id], onDelete: Restrict)
+
+  name String
+
+  /// Half-open on both axes: a point belongs when
+  /// `minLat <= lat < maxLat AND minLng <= lng < maxLng`.
+  minLat Float
+  maxLat Float
+  minLng Float
+  maxLng Float
+
+  isActive Boolean @default(true)
+
+  areaServices AreaService[]
+  proAreas     ProArea[]
+  bookings     Booking[]
+
+  @@unique([cityId, name])
+  @@index([cityId, isActive])
+  /// What `resolveArea` reads. Latitude leads because it is the more
+  /// selective of the two across a city-sized grid.
+  @@index([minLat, maxLat, minLng, maxLng])
+  @@map("areas")
+}
+
+/// Which services are bookable in which area.
+///
+/// This is the row that makes "AC repair in Vijay Nagar but not Rau"
+/// expressible at all — before it, serviceability was `City.isActive` and
+/// nothing finer (CONFLICTS_AND_DECISIONS #8).
+///
+/// Availability only. Price stays national and per-service: there are still no
+/// per-area price rows, and `Booking.flatPrice` is still snapshotted from
+/// `Service.flatPrice`.
+model AreaService {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  areaId    String  @db.Uuid
+  area      Area    @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  serviceId String  @db.Uuid
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  isActive Boolean @default(true)
+
+  @@unique([areaId, serviceId])
+  @@index([serviceId, isActive])
+  @@map("area_services")
+}
+
+/// Which areas a Pro is posted to. Admin-set, like every other gate on a Pro.
+///
+/// A **filter on dispatch, never the ranking** — distance and travel time
+/// still order the candidates. A Pro posted to Vijay Nagar may physically be
+/// anywhere while travelling, and their live position is what dispatch scores;
+/// this only says where they are expected to work.
+model ProArea {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId  String @db.Uuid
+  pro    Pro    @relation(fields: [proId], references: [id], onDelete: Cascade)
+  areaId String @db.Uuid
+  area   Area   @relation(fields: [areaId], references: [id], onDelete: Cascade)
+
+  isActive Boolean @default(true)
+
+  @@unique([proId, areaId])
+  @@index([areaId, isActive])
+  @@map("pro_areas")
 }
 
 /// The browse tree. Field names follow ERD v10 exactly.
@@ -98,9 +199,15 @@ model Service {
   /// Draft by default. Going live is an explicit, validated transition.
   isActive Boolean @default(false)
 
+  /// Per-service cash gate (module 7, feature 11). Reverses
+  /// CONFLICTS_AND_DECISIONS #13 — see #37 for why. Defaults to true so
+  /// nothing that was bookable as cash before stops being so.
+  allowsCash Boolean @default(true)
+
   proServices    ProService[]
   bookings       Booking[]
   recurringPlans RecurringPlan[]
+  areaServices   AreaService[]
 
   @@index([categoryId, name])
   @@index([isActive])
@@ -153,6 +260,8 @@ model AdminUser {
   platformSettingsUpdated      PlatformSetting[]
   overriddenBookings           Booking[]          @relation("BookingOverrideAdmin")
   approvedCommissionPayouts    CommissionPayout[] @relation("PayoutApprover")
+  confirmedCashHandovers       CashHandover[]     @relation("CashHandoverConfirmer")
+  refundedOrders               Order[]            @relation("OrderRefundInitiator")
 
   @@map("admin_users")
 }
@@ -191,6 +300,7 @@ model Customer {
   bookings       Booking[]
   recurringPlans RecurringPlan[]
   reviews        Review[]
+  orders         Order[]
 
   @@index([status, createdAt])
   @@map("customers")
@@ -218,6 +328,13 @@ model CustomerAddress {
 
   cityId String @db.Uuid
   city   City   @relation(fields: [cityId], references: [id], onDelete: Restrict)
+
+  // NO areaId here, deliberately. It would be a cache of
+  // resolveArea(pinLat, pinLng) that nothing maintains: the customers module
+  // cannot reach module 13 without a dependency cycle, and booking re-resolves
+  // from the pin anyway because areas get redrawn after an address is saved.
+  // The app asks GET /geo/serviceability with the pin before saving, which
+  // answers the same question without a column that can go stale.
 
   isDefault Boolean @default(false)
 
@@ -300,6 +417,17 @@ model Pro {
   completedJobs           Int       @default(0)
   countersRebuiltAt       DateTime?
 
+  /// Banknotes this Pro is currently carrying on the platform's behalf.
+  ///
+  /// A **cache of the ledger**, in exactly the relationship `completedJobs`
+  /// has to `Booking` — module 9's nightly rebuild is what makes it
+  /// authoritative. It exists as a column because dispatch gates on it
+  /// (feature 16) and cannot afford a ledger aggregate per candidate.
+  ///
+  /// Moved by exactly two operations: a cash collection and a **confirmed**
+  /// handover. Commission is never netted against it — feature 15.
+  cashInHand Decimal @default(0) @db.Decimal(12, 2)
+
   /// Employment start date.
   approvedAt DateTime?
 
@@ -313,6 +441,8 @@ model Pro {
   reviews              Review[]
   commissions          BookingCommission[]
   payouts              CommissionPayout[]
+  cashHandovers        CashHandover[]
+  areas                ProArea[]
 
   @@index([status])
   @@index([isAvailable])
@@ -447,6 +577,13 @@ model Booking {
   addressId     String          @db.Uuid
   address       CustomerAddress @relation(fields: [addressId], references: [id], onDelete: Restrict)
 
+  /// The area this booking was sold into, frozen at creation for the same
+  /// reason `flatPrice` is: areas get redrawn, and a booking must keep saying
+  /// where it was taken. Null on every booking predating areas, and on one
+  /// whose pin fell outside all of them.
+  areaId String? @db.Uuid
+  area   Area?   @relation(fields: [areaId], references: [id], onDelete: SetNull)
+
   /// instant | scheduled | recurring
   bookingType String @default("instant")
 
@@ -472,7 +609,19 @@ model Booking {
   paymentMode   String @default("cash")
   /// unpaid | authorized | paid | refunded. For cash, "paid" means a Pro is
   /// carrying banknotes — read paymentMode beside it.
+  ///
+  /// Written once here at creation; module 7 is its only other writer.
   paymentStatus String @default("unpaid")
+
+  /// CASH ONLY — the store of record for a cash booking, which has no Order
+  /// row (CONFLICTS_AND_DECISIONS #36). Not an input: it is `flatPrice` or it
+  /// is null. A Pro cannot record a part payment.
+  cashCollectedAmount Decimal?  @db.Decimal(12, 2)
+  cashCollectedAt     DateTime?
+  /// Set when the customer refuses to pay. The job still completes and the
+  /// Pro is still paid their commission — feature 17.
+  cashDeclinedAt      DateTime?
+  cashDeclinedReason  String?
 
   status String  @default("created")
   proId  String? @db.Uuid
@@ -525,12 +674,18 @@ model Booking {
   photoProofs          JobPhotoProof[]
   review               Review?
   commission           BookingCommission?
+  /// Online only, and plural: an expired or voided order is reissued rather
+  /// than mutated, so the gateway history stays readable by receipt.
+  orders               Order[]
 
   @@index([proId, status])
   @@index([customerId, createdAt])
   @@index([customerId, status])
   @@index([addressId, proId, completedAt])
   @@index([status, slotStartAt])
+  // "How much work came out of Vijay Nagar this month" — the question areas
+  // exist to make answerable.
+  @@index([areaId, createdAt])
   @@map("bookings")
 }
 
@@ -614,6 +769,120 @@ model JobPhotoProof {
 }
 
 // =====================================================================
+// 07 · PAYMENTS — RAZORPAY ORDERS AND CASH
+// =====================================================================
+//
+// ONLINE BOOKINGS ONLY. A cash booking has no Order row at all, which means
+// any report joining Order silently undercounts every cash job — the single
+// most likely bug this module can cause (CONFLICTS_AND_DECISIONS #36).
+//
+// There is no Payment table and there will not be one. Attempt-level detail —
+// every try, its failure code, the method used — lives at Razorpay and is read
+// in THEIR dashboard by razorpayOrderId. Only what the platform must join or
+// reconcile on is here. In exchange, there is no local copy of payment data to
+// drift out of sync with the gateway.
+
+model Order {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// A booking may have several orders — expired, voided, reissued.
+  bookingId  String   @db.Uuid
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  customerId String   @db.Uuid
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  /// The key for every gateway lookup, support's included.
+  razorpayOrderId String @unique
+  /// Our reference sent to Razorpay: `<bookingNumber>-<n>`.
+  receipt         String @unique
+
+  /// Rupees, like every other money column here. Razorpay transacts in
+  /// integer paise — the conversion lives in payments.money.ts and nowhere
+  /// else.
+  amount     Decimal @db.Decimal(12, 2)
+  amountPaid Decimal @default(0) @db.Decimal(12, 2)
+  amountDue  Decimal @db.Decimal(12, 2)
+  currency   String  @default("INR")
+
+  /// created | attempted | paid — FORWARD ONLY. Razorpay does not guarantee
+  /// webhook ordering, so a late `authorized` must not undo a `captured`.
+  status String @default("created")
+
+  /// Mirrors of the gateway for triage only. `attempts` is Razorpay's own
+  /// counter and `failureCode` is the LAST failure, not a history.
+  attempts    Int     @default(0)
+  failureCode String?
+
+  /// The successful attempt's reference — written once and never overwritten.
+  /// A second, different payment id against a paid order is a duplicate-charge
+  /// signal, not an update.
+  capturedPaymentId String?   @unique
+  paymentMethod     String?
+  paidAt            DateTime?
+
+  /// rzp notes echoed back: bookingId, serviceId, cityId. What makes a
+  /// gateway-side row traceable to a booking without our database.
+  notesJson Json?
+
+  /// CUMULATIVE across refunds, never per-refund.
+  refundAmount     Decimal?  @db.Decimal(12, 2)
+  razorpayRefundId String?
+  /// none | initiated | settled | failed — forward only, except that `failed`
+  /// is terminal for the attempt and leaves refundAmount standing.
+  refundStatus     String    @default("none")
+  refundedAt       DateTime?
+
+  refundInitiatedByAdminId String?    @db.Uuid
+  refundInitiatedByAdmin   AdminUser? @relation("OrderRefundInitiator", fields: [refundInitiatedByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([bookingId, createdAt])
+  @@index([customerId, createdAt])
+  @@index([status])
+  @@index([refundStatus])
+  @@map("orders")
+}
+
+/// The only thing that clears a Pro's cash balance.
+///
+/// Recovery is by handover, never by netting: the Pro declares, an admin
+/// confirms, and only the confirmation moves `Pro.cashInHand`. Commission is
+/// untouched throughout — a Pro who owes cash is still paid in full, which is
+/// why a Pro who stops handing over accumulates indefinitely and no arithmetic
+/// notices (CONFLICTS_AND_DECISIONS #36).
+model CashHandover {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId String @db.Uuid
+  pro   Pro    @relation(fields: [proId], references: [id], onDelete: Restrict)
+
+  /// What the Pro says they are handing over.
+  declaredAmount Decimal  @db.Decimal(12, 2)
+  declaredAt     DateTime @default(now())
+
+  /// declared | confirmed | rejected
+  status String @default("declared")
+
+  /// What the admin actually counted. Deliberately allowed to differ from
+  /// `declaredAmount` — the variance is the point of counting, and it is
+  /// never silently reconciled away.
+  confirmedAmount    Decimal?   @db.Decimal(12, 2)
+  confirmedAt        DateTime?
+  confirmedByAdminId String?    @db.Uuid
+  confirmedByAdmin   AdminUser? @relation("CashHandoverConfirmer", fields: [confirmedByAdminId], references: [id], onDelete: SetNull)
+
+  rejectionReason String?
+  notes           String?
+
+  @@index([proId, status])
+  @@index([status, declaredAt])
+  @@map("cash_handovers")
+}
+
+// =====================================================================
 // 05-10 · MINIMUM SOURCE MODELS REQUIRED BY PRO LIFECYCLE & STANDING
 // =====================================================================
 
@@ -622,12 +891,12 @@ model AssignmentCandidate {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  bookingId      String   @db.Uuid
-  booking        Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  attemptNumber  Int
-  proId          String   @db.Uuid
-  pro            Pro      @relation(fields: [proId], references: [id], onDelete: Restrict)
-  isWinner Boolean @default(false)
+  bookingId     String  @db.Uuid
+  booking       Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  attemptNumber Int
+  proId         String  @db.Uuid
+  pro           Pro     @relation(fields: [proId], references: [id], onDelete: Restrict)
+  isWinner      Boolean @default(false)
 
   /// The free window this Pro had, computed from committed bookings alone.
   windowStart DateTime?
