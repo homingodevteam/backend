@@ -13,6 +13,7 @@ import { BookingTrackingService } from './../src/modules/bookings/booking-tracki
 import { BookingsService } from './../src/modules/bookings/bookings.service';
 import { ProBookingsController } from './../src/modules/bookings/pro-bookings.controller';
 import { RecurringPlansService } from './../src/modules/bookings/recurring-plans.service';
+import { ProCountersService } from './../src/modules/pros/pro-counters.service';
 import { ActorTypeGuard } from './../src/modules/identity/guards/actor-type.guard';
 import { JwtAuthGuard } from './../src/modules/identity/guards/jwt-auth.guard';
 import { PermissionsGuard } from './../src/modules/identity/guards/permissions.guard';
@@ -53,6 +54,8 @@ describe('Bookings Swagger contract (e2e)', () => {
         { provide: BookingLifecycleService, useValue: {} },
         { provide: RecurringPlansService, useValue: {} },
         { provide: BookingTrackingService, useValue: {} },
+        // POST bookings/:id/review hands the rating to Module 6's counters.
+        { provide: ProCountersService, useValue: {} },
       ],
     })
       .overrideGuard(JwtAuthGuard)
