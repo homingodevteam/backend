@@ -32,8 +32,27 @@ function buildDeps() {
     checkServiceability: jest.fn().mockResolvedValue({ serviceable: true }),
   };
   const dispatch = { requestAssignment: jest.fn() };
-  const payments = { createOrder: jest.fn() };
-  return { prisma, state, catalog, customers, dispatch, payments };
+  const payments = {
+    createOrder: jest.fn(),
+    // Permissive, matching the no-op the port is bound to until module 7
+    // registers — so these cases test the fork, not the cash gate.
+    assertCashAllowed: jest.fn().mockResolvedValue(undefined),
+  };
+  // Module 13's area gate. `areaId: null` is what the no-op returns and what
+  // every booking taken before areas existed looks like, so these cases test
+  // the fork rather than the area map.
+  const serviceability = {
+    resolveForBooking: jest.fn().mockResolvedValue({ areaId: null }),
+  };
+  return {
+    prisma,
+    state,
+    catalog,
+    customers,
+    dispatch,
+    payments,
+    serviceability,
+  };
 }
 
 function buildService(deps: ReturnType<typeof buildDeps>): BookingsService {
@@ -44,6 +63,7 @@ function buildService(deps: ReturnType<typeof buildDeps>): BookingsService {
     deps.customers as never,
     deps.dispatch as never,
     deps.payments as never,
+    deps.serviceability,
   );
 }
 

@@ -17,6 +17,10 @@ import { PlatformSettingsService } from './platform-settings.service';
 import { ProBookingsController } from './pro-bookings.controller';
 import { DISPATCH_PORT, NoOpDispatchService } from './ports/dispatch.port';
 import { NoOpPaymentsService, PAYMENTS_PORT } from './ports/payments.port';
+import {
+  NoOpServiceabilityService,
+  SERVICEABILITY_PORT,
+} from './ports/serviceability.port';
 import { RecurringPlansService } from './recurring-plans.service';
 
 /**
@@ -64,14 +68,20 @@ import { RecurringPlansService } from './recurring-plans.service';
     PlatformSettingsService,
     { provide: DISPATCH_PORT, useClass: NoOpDispatchService },
     { provide: PAYMENTS_PORT, useClass: NoOpPaymentsService },
+    { provide: SERVICEABILITY_PORT, useClass: NoOpServiceabilityService },
   ],
-  // PlatformSettingsService and the dispatch port are exported so module 5
-  // can read tunables and register the real engine into the delegate.
+  // PlatformSettingsService and the two ports are exported so modules 5 and 7
+  // can read tunables and register their real implementations into the
+  // delegates. Module 7 also needs DISPATCH_PORT: a captured payment is what
+  // sends an online booking to dispatch, and it must go through the same door
+  // module 4 uses rather than a second one.
   exports: [
     BookingsService,
     BookingStateService,
     PlatformSettingsService,
     DISPATCH_PORT,
+    PAYMENTS_PORT,
+    SERVICEABILITY_PORT,
   ],
 })
 export class BookingsModule {}

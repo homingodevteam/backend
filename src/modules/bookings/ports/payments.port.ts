@@ -29,10 +29,23 @@ export interface PaymentsPort {
    * are different states the customer must be able to tell apart.
    */
   initiateRefund(bookingId: string, amount: string): Promise<void>;
+
+  /**
+   * May this service, in this city, be booked as cash at all?
+   *
+   * Asked **before** the booking row exists, because `paymentMode` is frozen
+   * at creation — getting it wrong is permanent for that booking, and there is
+   * no route anywhere in the API to change it afterwards.
+   *
+   * Throws rather than returning a boolean: every caller's only sensible
+   * response to "no" is to refuse the booking with a reason, and a boolean
+   * invites one of them to forget.
+   */
+  assertCashAllowed(serviceId: string, cityId: string | null): Promise<void>;
 }
 
 /**
- * Stand-in until module 7 lands.
+ * Stand-in until module 7 lands, and the delegate it registers into.
  *
  * `createOrder` **fails loudly** rather than returning a fake order id. An
  * online booking that appeared to have an order but did not would sit in
@@ -48,7 +61,32 @@ export interface PaymentsPort {
 export class NoOpPaymentsService implements PaymentsPort {
   private readonly logger = new Logger(NoOpPaymentsService.name);
 
-  createOrder(bookingId: string): Promise<CreatedOrder> {
+  /**
+   * The real gateway integration, registered at boot by module 7 if it is
+   * present and configured.
+   *
+   * The same indirection `NoOpDispatchService` uses, for the same reason: Nest
+   * resolves providers per module, so re-binding `PAYMENTS_PORT` inside
+   * `PaymentsModule` would never reach `BookingsService` — it would keep
+   * getting *this* class. Making `BookingsModule` import `PaymentsModule`
+   * instead would invert the very dependency this port exists to prevent.
+   */
+  private real: PaymentsPort | null = null;
+
+  register(implementation: PaymentsPort): void {
+    this.real = implementation;
+    this.logger.log(
+      'Payment gateway registered — online bookings can be paid.',
+    );
+  }
+
+  get isGatewayRegistered(): boolean {
+    return this.real !== null;
+  }
+
+  createOrder(bookingId: string, amount: string): Promise<CreatedOrder> {
+    if (this.real) return this.real.createOrder(bookingId, amount);
+
     throw apiError(
       'Online payment is not available yet — book with cash on delivery instead',
       HttpStatus.NOT_IMPLEMENTED,
@@ -62,7 +100,22 @@ export class NoOpPaymentsService implements PaymentsPort {
     );
   }
 
+  /**
+   * Permissive when nothing is registered, and deliberately so.
+   *
+   * Cash is the default payment mode and the only one that works without a
+   * gateway. Refusing it here would take the whole product offline on a
+   * deployment with no Razorpay credentials, to enforce a per-service and
+   * per-city policy that module 7 is the only thing able to express.
+   */
+  assertCashAllowed(serviceId: string, cityId: string | null): Promise<void> {
+    if (this.real) return this.real.assertCashAllowed(serviceId, cityId);
+    return Promise.resolve();
+  }
+
   initiateRefund(bookingId: string, amount: string): Promise<void> {
+    if (this.real) return this.real.initiateRefund(bookingId, amount);
+
     this.logger.warn(
       `Refund of ${amount} recorded against booking ${bookingId}, but Payments (module 7) is not built — nothing has been sent to the gateway.`,
     );
