@@ -384,6 +384,66 @@ export class ServiceabilityDto {
   code?: string;
 }
 
+export class KnownAddressDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'home' })
+  label: string;
+
+  @ApiProperty({ example: '12 MG Road' })
+  addressLine: string;
+
+  @ApiProperty({ example: 22.7533 })
+  pinLat: number;
+
+  @ApiProperty({ example: 75.8937 })
+  pinLng: number;
+
+  @ApiProperty()
+  cityId: string;
+}
+
+/**
+ * What we already believe about a customer's location, for the app's first
+ * screen — **before** it asks for GPS permission.
+ */
+export class MyLocationDto {
+  @ApiPropertyOptional({
+    enum: ['default_address', 'recent_address'],
+    nullable: true,
+    description:
+      'Where the guess came from. **Null means we know nothing** — a new or ' +
+      'guest customer — which is the signal to prompt for GPS and then call ' +
+      '`/geo/reverse-geocode`. It is a normal first-run state, not an error.',
+  })
+  source: string | null;
+
+  @ApiPropertyOptional({ type: KnownAddressDto, nullable: true })
+  address: KnownAddressDto | null;
+
+  @ApiPropertyOptional({
+    type: ResolvedAreaDto,
+    nullable: true,
+    description:
+      'Re-resolved from the pin on every call, never cached on the address — ' +
+      'areas get redrawn, and a cell saved last month may since have been ' +
+      'renamed, split or switched off.',
+  })
+  area: ResolvedAreaDto | null;
+
+  @ApiProperty()
+  serviceable: boolean;
+
+  @ApiPropertyOptional({ description: 'Safe to show the customer verbatim.' })
+  reason?: string;
+
+  @ApiPropertyOptional({
+    enum: ['NO_KNOWN_LOCATION', 'LOCATION_NOT_SERVICEABLE'],
+  })
+  code?: string;
+}
+
 export class ReverseGeocodeQueryDto {
   @ApiProperty({ example: 22.7533 })
   @Type(() => Number)

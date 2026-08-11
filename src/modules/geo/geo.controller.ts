@@ -1,5 +1,17 @@
-import { Controller, Get, HttpStatus, Param, Query } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  HttpStatus,
+  Param,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user.type';
+import { RequireActorType } from '../identity/decorators/require-actor-type.decorator';
+import { ActorTypeGuard } from '../identity/guards/actor-type.guard';
+import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import {
   ApiErrorEnvelope,
   ApiOkEnvelope,
@@ -7,6 +19,7 @@ import {
 import {
   LocationCatalogDto,
   LocationCatalogQueryDto,
+  MyLocationDto,
   PublicAreaDto,
   ReverseGeocodeDto,
   ReverseGeocodeQueryDto,
@@ -16,20 +29,55 @@ import {
 import { LocationService } from './location.service';
 
 /**
- * The customer app's two location questions, both answered server-side.
+ * Every location question the customer app asks, answered server-side.
  *
- * Unauthenticated on purpose: a customer must be able to find out whether we
- * operate at their address **before** creating an account, and neither answer
- * discloses anything a competitor could not get by dropping a pin themselves.
+ * The launch sequence these are shaped around:
  *
- * Neither endpoint accepts an `areaId`. The client sends a pin; the server
- * decides which area it is. That direction is the whole security model here —
- * a client that could name its own area could book a service anywhere.
+ * 1. `GET /geo/my-location` — do you already know where I am? A returning
+ *    customer skips straight to a catalogue; the GPS permission dialog becomes
+ *    something the app asks for when it needs precision, not a wall on launch.
+ * 2. If not, prompt for GPS, then `GET /geo/reverse-geocode` — turn the pin
+ *    into an address and an area in one call.
+ * 3. `GET /geo/catalog` — what can I actually book here.
+ *
+ * **Only `my-location` is authenticated**, because it is the only one that
+ * reads something belonging to a particular customer. The rest are public on
+ * purpose: someone must be able to find out whether we serve their street
+ * before creating an account, and none of those answers discloses anything a
+ * competitor could not get by dropping a pin themselves.
+ *
+ * **No endpoint here accepts an `areaId`.** The client sends a pin; the server
+ * decides which area it is. That direction is the whole security model — a
+ * client that could name its own area could book a service anywhere.
  */
 @ApiTags('Geo')
 @Controller('geo')
 export class GeoController {
   constructor(private readonly location: LocationService) {}
+
+  @Get('my-location')
+  @ApiBearerAuth('access-token')
+  @UseGuards(JwtAuthGuard, ActorTypeGuard)
+  @RequireActorType('customer')
+  @ApiOperation({
+    summary: 'Where do you already think I am?',
+    description:
+      '**Call this on app open, before prompting for location permission.**\n\n' +
+      'A returning customer with a saved address gets their catalogue ' +
+      'immediately, and the GPS dialog becomes something the app asks for ' +
+      'when it needs precision rather than a wall on launch.\n\n' +
+      'This does **not** read the device GPS — nothing on a server can. It ' +
+      'reports the best address we already hold, re-resolved to a current ' +
+      'area.\n\n' +
+      '`source: null` means we know nothing yet: a new or guest customer. ' +
+      'That is a normal first-run state, not an error — prompt for GPS and ' +
+      'call `/geo/reverse-geocode` with the pin.',
+  })
+  @ApiOkEnvelope(MyLocationDto)
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
+  myLocation(@CurrentUser() user: AuthenticatedUser): Promise<MyLocationDto> {
+    return this.location.myLocation(user.id);
+  }
 
   @Get('reverse-geocode')
   @ApiOperation({

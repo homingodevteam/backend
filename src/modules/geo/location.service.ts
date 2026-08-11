@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformSettingsService } from '../bookings/platform-settings.service';
 import { BrowseServicesQueryDto } from '../catalog/dto/browse-services-query.dto';
 import { ServiceCatalogService } from '../catalog/service-catalog.service';
+import { CustomersService } from '../customers/customers.service';
 import {
   boxAreaSqKm,
   GEO_SETTINGS,
@@ -22,6 +23,7 @@ export class LocationService {
     private readonly settings: PlatformSettingsService,
     private readonly catalog: ServiceCatalogService,
     @Inject(GEOCODER) private readonly geocoder: GeocoderPort,
+    private readonly customers: CustomersService,
   ) {}
 
   /**
@@ -215,6 +217,63 @@ export class LocationService {
         code: result.code!,
       },
     ]);
+  }
+
+  /**
+   * Where we already believe this customer is, for the app's first screen.
+   *
+   * **This does not read a device's GPS** — nothing on a server can. It
+   * answers the question a client should ask *before* prompting for location
+   * permission: "do you already know where I am?" A returning customer with a
+   * saved address gets their catalogue immediately, and the permission dialog
+   * becomes something the app asks for when it actually needs precision,
+   * rather than a wall on launch.
+   *
+   * `source` is null when we know nothing — a new or guest customer with no
+   * saved address. That is the signal to ask for GPS and then call
+   * `/geo/reverse-geocode`; it is not an error, and returning 404 for it would
+   * make the ordinary first-run path look like a failure.
+   */
+  async myLocation(customerId: string) {
+    // Already ordered default-first, then newest — so the first row is the
+    // best guess without a second query or a sort here.
+    const [address] = await this.customers.listAddresses(customerId);
+
+    if (!address) {
+      return {
+        source: null,
+        address: null,
+        area: null,
+        serviceable: false,
+        reason: 'We do not have a saved address for you yet',
+        code: 'NO_KNOWN_LOCATION',
+      };
+    }
+
+    // Re-resolved rather than trusted: areas get redrawn, and an address saved
+    // last month may sit in a cell that has since been renamed, split or
+    // switched off.
+    const area = await this.resolveArea(address.pinLat, address.pinLng);
+
+    return {
+      source: address.isDefault ? 'default_address' : 'recent_address',
+      address: {
+        id: address.id,
+        label: address.label,
+        addressLine: address.addressLine,
+        pinLat: address.pinLat,
+        pinLng: address.pinLng,
+        cityId: address.cityId,
+      },
+      area,
+      serviceable: area !== null,
+      ...(area
+        ? {}
+        : {
+            reason: 'We are not operating at your saved address yet',
+            code: 'LOCATION_NOT_SERVICEABLE',
+          }),
+    };
   }
 
   /**

@@ -112,6 +112,7 @@ describe('Geo Swagger contract (e2e)', () => {
   }
 
   const PUBLIC_ROUTES: Array<[string, string, number]> = [
+    ['/geo/reverse-geocode', 'get', 200],
     ['/geo/catalog', 'get', 200],
     ['/geo/serviceability', 'get', 200],
     ['/geo/services/{serviceId}/areas', 'get', 200],
@@ -167,6 +168,19 @@ describe('Geo Swagger contract (e2e)', () => {
       expect(operation.responses).toHaveProperty('403');
     },
   );
+
+  /**
+   * The one authenticated route here, and the only one that reads something
+   * belonging to a particular customer. Everything else must stay public so a
+   * visitor can check their street before creating an account.
+   */
+  it('authenticates my-location and nothing else', () => {
+    const mine = operationAt('/geo/my-location', 'get');
+    expect(mine.security).toEqual(
+      expect.arrayContaining([{ 'access-token': [] }]),
+    );
+    expect(mine.responses).toHaveProperty('401');
+  });
 
   it('leaves the customer-facing routes unauthenticated', () => {
     // A customer must be able to find out whether we serve their address

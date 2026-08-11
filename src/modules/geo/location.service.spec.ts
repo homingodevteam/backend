@@ -22,7 +22,8 @@ function buildDeps() {
       attribution: 'Map data ©2026 Google',
     }),
   };
-  return { prisma, settings, catalog, geocoder };
+  const customers = { listAddresses: jest.fn().mockResolvedValue([]) };
+  return { prisma, settings, catalog, geocoder, customers };
 }
 
 function build(deps: ReturnType<typeof buildDeps>): LocationService {
@@ -31,6 +32,7 @@ function build(deps: ReturnType<typeof buildDeps>): LocationService {
     deps.settings as never,
     deps.catalog as never,
     deps.geocoder,
+    deps.customers as never,
   );
 }
 
@@ -254,6 +256,86 @@ describe('LocationService · checkServiceability', () => {
         })
       ).serviceable,
     ).toBe(true);
+  });
+});
+
+describe('LocationService · myLocation', () => {
+  const savedAddress = {
+    id: 'addr-1',
+    label: 'home',
+    addressLine: '12 MG Road',
+    pinLat: 22.7533,
+    pinLng: 75.8937,
+    cityId: 'city-indore',
+    isDefault: true,
+  };
+
+  it('reports the saved address and the area it currently falls in', async () => {
+    const deps = buildDeps();
+    deps.customers.listAddresses.mockResolvedValue([savedAddress]);
+    deps.prisma.area.findMany.mockResolvedValue([anArea()]);
+
+    const result = await build(deps).myLocation('cust-1');
+
+    expect(result).toMatchObject({
+      source: 'default_address',
+      serviceable: true,
+      address: { id: 'addr-1', addressLine: '12 MG Road' },
+      area: { areaName: 'Vijay Nagar' },
+    });
+  });
+
+  /**
+   * A new or guest customer is the ordinary first-run path, not a failure.
+   * Returning 404 here would make every fresh install look broken; `source:
+   * null` is the signal to ask for GPS.
+   */
+  it('says it knows nothing rather than erroring for a new customer', async () => {
+    const deps = buildDeps();
+    deps.customers.listAddresses.mockResolvedValue([]);
+
+    await expect(build(deps).myLocation('cust-1')).resolves.toMatchObject({
+      source: null,
+      address: null,
+      area: null,
+      serviceable: false,
+      code: 'NO_KNOWN_LOCATION',
+    });
+  });
+
+  /** listAddresses already orders default-first, then newest. */
+  it('falls back to the most recent address when none is default', async () => {
+    const deps = buildDeps();
+    deps.customers.listAddresses.mockResolvedValue([
+      { ...savedAddress, isDefault: false },
+    ]);
+    deps.prisma.area.findMany.mockResolvedValue([anArea()]);
+
+    expect((await build(deps).myLocation('cust-1')).source).toBe(
+      'recent_address',
+    );
+  });
+
+  /**
+   * Re-resolved, never cached on the address: a cell saved last month may
+   * since have been renamed, split, or switched off.
+   */
+  it('re-resolves the area rather than trusting anything stored', async () => {
+    const deps = buildDeps();
+    deps.customers.listAddresses.mockResolvedValue([savedAddress]);
+    deps.prisma.area.findMany.mockResolvedValue([]);
+
+    const result = await build(deps).myLocation('cust-1');
+
+    expect(deps.prisma.area.findMany).toHaveBeenCalled();
+    expect(result).toMatchObject({
+      area: null,
+      serviceable: false,
+      code: 'LOCATION_NOT_SERVICEABLE',
+    });
+    // The address is still returned — the customer should see where we think
+    // they are, even when we cannot serve it.
+    expect(result.address).not.toBeNull();
   });
 });
 
