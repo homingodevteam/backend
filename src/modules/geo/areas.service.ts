@@ -6,6 +6,7 @@ import {
   boxAreaSqKm,
   boxDimensionsKm,
   boxesOverlap,
+  expandBox,
   generateGrid,
   type BoundingBox,
 } from './geo.types';
@@ -336,6 +337,11 @@ export class AreasService {
       ]);
     }
 
+    // Only activation is gated. Switching a service OFF must always be
+    // possible — otherwise an area that lost its last Pro could never be
+    // corrected, which is exactly when someone needs to switch it off.
+    if (isActive) await this.assertStaffed(areaId, serviceId);
+
     return this.prisma.areaService.upsert({
       where: { areaId_serviceId: { areaId, serviceId } },
       update: { isActive },
@@ -399,6 +405,13 @@ export class AreasService {
           })),
         );
       }
+    }
+
+    // Every service being switched ON has to be staffed. Checked before the
+    // transaction opens so a rejection leaves nothing half-applied — the same
+    // all-or-nothing promise the unknown-service check above makes.
+    for (const serviceId of unique) {
+      await this.assertStaffed(areaId, serviceId);
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -492,6 +505,15 @@ export class AreasService {
           code: 'AREA_NOT_FOUND',
         },
       ]);
+    }
+
+    // "AC repair everywhere in Indore" is the call most likely to switch a
+    // service on somewhere nobody is staffed — it names areas in bulk, so
+    // nobody is looking at them one at a time.
+    if (isActive) {
+      for (const areaId of unique) {
+        await this.assertStaffed(areaId, serviceId);
+      }
     }
 
     await this.prisma.$transaction(
@@ -602,13 +624,118 @@ export class AreasService {
    * wearing a supply problem's clothes.
    */
   async proIdsForArea(areaId: string): Promise<string[] | null> {
+    return this.proIdsForAreas([areaId]);
+  }
+
+  /** The same question across several areas — dispatch's widening step. */
+  async proIdsForAreas(areaIds: string[]): Promise<string[] | null> {
+    if (areaIds.length === 0) return null;
+
     const rows = await this.prisma.proArea.findMany({
-      where: { areaId, isActive: true },
+      where: { areaId: { in: areaIds }, isActive: true },
       select: { proId: true },
     });
 
     if (rows.length === 0) return null;
-    return rows.map((row) => row.proId);
+    return [...new Set(rows.map((row) => row.proId))];
+  }
+
+  /**
+   * Areas adjacent to this one, found by expanding its box and asking what it
+   * then overlaps.
+   *
+   * The rectangle model earns its keep here: with circles this needed a
+   * centre-distance heuristic that got the corners wrong. Cells that share an
+   * edge qualify at any margin above zero; cells across town never do.
+   *
+   * Same city only. Widening a Bhopal booking into Indore because the grids
+   * happen to abut would be worse than not assigning it.
+   */
+  async neighbourIdsOf(areaId: string, marginKm: number): Promise<string[]> {
+    const area = await this.findByIdOrFail(areaId);
+
+    const siblings = await this.prisma.area.findMany({
+      where: { cityId: area.cityId, isActive: true, id: { not: areaId } },
+    });
+
+    const grown = expandBox(area, marginKm);
+    return siblings
+      .filter((other) => boxesOverlap(grown, other))
+      .map((other) => other.id);
+  }
+
+  /**
+   * Is there anyone who could actually do this service here?
+   *
+   * The check that stops "we sell it here" and "someone can do it here" from
+   * drifting apart. They are configured independently — `AreaService` by
+   * whoever runs the catalogue, `ProArea` by whoever runs staffing — and
+   * nothing else notices when they disagree.
+   *
+   * Counts **approved** Pros posted to the area who hold the service. It
+   * deliberately ignores `isAvailable`: that flag is today's roster, and a
+   * service should not become unsellable because everyone happens to be off
+   * shift this afternoon. This answers the structural question — is anybody
+   * staffed for this here at all — which is the one that maps to
+   * CONFLICTS_AND_DECISIONS #31's `no_supply`.
+   */
+  async countProsCapableInArea(
+    areaId: string,
+    serviceId: string,
+  ): Promise<number> {
+    return this.prisma.pro.count({
+      where: {
+        status: 'approved',
+        areas: { some: { areaId, isActive: true } },
+        services: { some: { serviceId, isActive: true } },
+      },
+    });
+  }
+
+  /**
+   * Refuses to switch a service on in an area nobody is staffed for.
+   *
+   * Extends US-3.9's city-launch supply gate down one level. That gate blocks
+   * activating a city with no approved Pro; this blocks activating a service
+   * in an area with nobody who can perform it — the same mistake at finer
+   * grain, and now the more likely one, because areas are configured far more
+   * often than cities are launched.
+   *
+   * Fails at the moment someone makes the mistake, to the person making it,
+   * which is the only time it is cheap to fix. The alternative is discovering
+   * it when a customer's booking cannot be assigned.
+   */
+  private async assertStaffed(
+    areaId: string,
+    serviceId: string,
+  ): Promise<void> {
+    const capable = await this.countProsCapableInArea(areaId, serviceId);
+    if (capable > 0) return;
+
+    const [area, service] = await Promise.all([
+      this.prisma.area.findUnique({
+        where: { id: areaId },
+        select: { name: true },
+      }),
+      this.prisma.service.findUnique({
+        where: { id: serviceId },
+        select: { name: true },
+      }),
+    ]);
+
+    throw apiError(
+      `No approved Pro posted to ${area?.name ?? 'this area'} can perform ${service?.name ?? 'this service'}`,
+      HttpStatus.CONFLICT,
+      [
+        {
+          field: 'serviceId',
+          message:
+            'Post a Pro who holds this service to this area first, or the ' +
+            'booking will be taken and then fail to assign',
+          code: 'AREA_NOT_STAFFED_FOR_SERVICE',
+        },
+      ],
+    );
   }
 }
 
