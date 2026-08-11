@@ -11,6 +11,8 @@ import { BookingChatService } from './booking-chat.service';
 import { BookingLifecycleService } from './booking-lifecycle.service';
 import { BookingStateService } from './booking-state.service';
 import { BookingTrackingService } from './booking-tracking.service';
+import { TrackingBroadcasterService } from './tracking-broadcaster.service';
+import { TrackingGateway } from './tracking.gateway';
 import { BookingsController } from './bookings.controller';
 import { BookingsService } from './bookings.service';
 import { PlatformSettingsService } from './platform-settings.service';
@@ -64,6 +66,8 @@ import { RecurringPlansService } from './recurring-plans.service';
     BookingCancellationService,
     BookingChatService,
     BookingTrackingService,
+    TrackingGateway,
+    TrackingBroadcasterService,
     RecurringPlansService,
     PlatformSettingsService,
     { provide: DISPATCH_PORT, useClass: NoOpDispatchService },

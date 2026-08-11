@@ -7,6 +7,7 @@ import {
 import type { Pro, Prisma } from '../../prisma/client';
 import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TRACKING_CHANNEL } from '../../redis/channels';
 import { RedisService } from '../../redis/redis.service';
 import { TokenService } from '../identity/services/token.service';
 import { AdminUpdateProProfileDto } from './dto/admin-update-pro-profile.dto';
@@ -95,6 +96,22 @@ export class ProsService {
       );
     }
     await this.redis.geoAdd(PRO_LIVE_GEO_KEY, dto.lng, dto.lat, id);
+
+    // Announce it so module 4 can push the new position to whoever is
+    // watching this Pro arrive — on this instance and on every other one.
+    //
+    // Published rather than called: BookingsModule already imports this
+    // module, so a direct call would be a cycle. Redis is the decoupling, and
+    // a dropped announcement costs one map frame while the durable state
+    // above is already written.
+    await this.redis
+      .publish(TRACKING_CHANNEL, {
+        proId: id,
+        lat: dto.lat,
+        lng: dto.lng,
+        reportedAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
     await this.prisma.pro.update({
       where: { id },
       data: {

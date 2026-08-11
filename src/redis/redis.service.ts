@@ -18,6 +18,11 @@ import { buildRedisOptions } from '../config/redis.config';
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
   private client: Redis;
+  /**
+   * Connections held in subscriber mode. Kept so they can be closed on
+   * shutdown — a duplicated client that nobody quits keeps the process alive.
+   */
+  private readonly subscribers: Redis[] = [];
 
   constructor(private readonly config: ConfigService) {}
 
@@ -41,10 +46,62 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    await Promise.all(
+      this.subscribers.map((sub) => sub.quit().catch(() => {})),
+    );
     await this.client?.quit();
   }
 
-  /** Raw client escape hatch for anything the helpers below don't cover. */
+  /**
+   * Fan a message out to every app instance subscribed to `channel`.
+   *
+   * Used by live tracking: a Pro's location lands on whichever instance served
+   * their POST, while the customer watching them holds a socket on whichever
+   * instance their app connected to. Those are rarely the same box, and
+   * without this the customer's map only updates when the two happen to
+   * coincide.
+   */
+  async publish(channel: string, payload: unknown): Promise<void> {
+    await this.client.publish(channel, JSON.stringify(payload));
+  }
+
+  /**
+   * Listen on a channel for the process's lifetime.
+   *
+   * **Takes its own connection**, because a Redis client in subscriber mode
+   * may issue nothing but subscribe/unsubscribe commands — reusing the shared
+   * one would break every `get` and `set` in the application the moment
+   * anything subscribed.
+   *
+   * A malformed message is dropped rather than thrown: a publisher on another
+   * instance is outside this process's control, and one bad frame must not
+   * tear down the subscriber for everybody.
+   */
+  subscribe(channel: string, onMessage: (payload: unknown) => void): void {
+    const subscriber = this.client.duplicate();
+
+    void subscriber.subscribe(channel, (error) => {
+      if (error) {
+        this.logger.error(
+          `Could not subscribe to ${channel}: ${error.message}. ` +
+            'Cross-instance delivery on this channel is down.',
+        );
+      }
+    });
+
+    subscriber.on('message', (received, raw) => {
+      if (received !== channel) return;
+      try {
+        onMessage(JSON.parse(raw));
+      } catch {
+        this.logger.warn(`Dropped a malformed message on ${channel}`);
+      }
+    });
+
+    this.subscribers.push(subscriber);
+  }
+
+  /** Raw client escape hatch for anything the helpers here don't cover. */
   get raw(): Redis {
     return this.client;
   }
