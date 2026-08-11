@@ -69,6 +69,18 @@ model Area {
 
   name String
 
+  /// Grid position (`A1`, `C3`) for a generated cell; null for a hand-drawn
+  /// area. Survives renaming, because ops keeps talking about "cell C3" long
+  /// after it has been renamed to "Vijay Nagar".
+  gridRef String?
+
+  /// generated | geocoded | manual — where `name` came from.
+  ///
+  /// The naming pass only ever overwrites `generated`, so a suggestion can
+  /// never clobber a name a human chose. Also tells an admin at a glance which
+  /// cells are still unreviewed placeholders.
+  nameSource String @default("manual")
+
   /// Half-open on both axes: a point belongs when
   /// `minLat <= lat < maxLat AND minLng <= lng < maxLng`.
   minLat Float
