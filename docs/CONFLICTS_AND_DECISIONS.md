@@ -72,6 +72,8 @@ Decisions here are binding. If one turns out wrong, change it here first.
 | 46  | A service sellable in an area nobody is staffed for                | 5/13     | Gate at config time, widen at run time. Two failures, two fixes                                |
 | 47  | The 60-minute travel cap was a guess refusing real customers       | 5        | Cap removed. Proximity decays instead; the city boundary is the only bound                     |
 | 48  | A generated grid is 36 squares nobody can identify                 | 13       | Reverse-geocode each centre into a suggestion; `nameSource` stops it clobbering a human        |
+| 49  | The geocoder had two owners and could have neither                 | 2/13     | Moved to `src/geocoding` as infrastructure; provider chosen by which key is present            |
+| 50  | Socket auth in `handleConnection` loses a race it cannot win       | 4        | Handshake middleware — identity attached before the socket is usable                           |
 
 ---
 
@@ -1357,6 +1359,84 @@ where the Google Places swap will land; exporting it was the smaller step.
 Nagar" is really cell C3 of a generated grid nobody has reviewed, and hand out
 the bounds of the entire service map. Conflict #34's rule, applied again: the
 mapper filters, the DTO documents.
+
+---
+
+## 49 · The geocoder had two owners and could have neither
+
+**Modules 2 + 13 · Resolved 2026-08-11**
+
+Reverse geocoding lived in `customers` because address-saving was its only
+caller. Then module 13 needed it to name grid cells, and the obvious moves were
+all wrong:
+
+- **Leave it in module 2 and export it** — which is what #48 did. It works, but
+  `geo` already sits downstream of `customers` (`geo → bookings → customers`),
+  so the dependency runs the wrong way for something neither module owns.
+- **Move it into module 13** — a cycle, immediately: `customers` would have to
+  import `geo`, which imports `bookings`, which imports `customers`.
+- **Give each module its own client** — two caches and, fatally, **two rate
+  limiters**. OpenStreetMap's limit is one request per second _for the whole
+  application_; two independent limiters is a way of breaking it twice.
+
+**Decision:** neither owns it. `src/geocoding` sits beside `redis/` and
+`storage/` as infrastructure, `@Global`, and both modules inject `GEOCODER`.
+
+### Two adapters, chosen by presence
+
+Google when `GOOGLE_MAPS_API_KEY` is set, Nominatim otherwise — the same
+presence-based selection the OTP provider already uses to swap the mock for
+Slide. `GEOCODER_PROVIDER` overrides, and **refuses to boot** if it names
+Google without a key rather than quietly using a different provider than the
+operator asked for.
+
+`minIntervalMs` is on the interface rather than in the caller, and that matters
+more than it looks: Nominatim declares 1100ms, Google declares 0.
+`AreaNamingService` reads it instead of hard-coding a delay, so **configuring a
+key makes a 36-cell naming pass roughly thirty times faster** without a line
+changing there.
+
+**A bug this found in its own adapter.** Every failing Google status —
+`REQUEST_DENIED`, `OVER_QUERY_LIMIT` — arrives with an empty `results` array.
+Testing emptiness first, as the first draft did, reported a misconfigured key or
+an exhausted quota as "no address could be resolved for this pin": our billing
+problem, rendered to every customer as a coverage problem, with nothing in the
+logs to say otherwise. Status is now judged before emptiness, and a spec pins
+the distinction.
+
+**Consequence:** the address a customer sees changes shape when the key is
+added — the two providers format `addressLine` quite differently — so the cache
+key is provider-scoped and `provider` is published on the response.
+
+---
+
+## 50 · Socket authentication in `handleConnection` loses a race it cannot win
+
+**Module 4 · Resolved 2026-08-11 · found by live testing**
+
+`JwtAuthGuard` is HTTP-only, so the tracking gateway verified its token in
+`handleConnection` — which is `async`. Socket.IO fires `connect` on the client
+as soon as the transport is up, and every sensible client emits its first
+message right there.
+
+So the first message races the verification, and usually wins. Live testing
+showed it plainly: a **valid** customer, with a **valid** token, got
+`{"ok":false,"error":"Not authenticated"}` on their first `track`.
+
+**Decision:** authenticate in Socket.IO **handshake middleware**
+(`server.use()`), which completes _during_ the handshake. By the time a message
+can be received the identity is attached, or the socket was never accepted. A
+rejected handshake surfaces as `connect_error`, which a client can tell apart
+from a dropped network.
+
+**Consequence:** the failure now lands at the right moment — a client with an
+expired token cannot connect at all, rather than connecting and being baffled
+by every message failing.
+
+**Worth remembering:** this was invisible to a unit test that awaited
+`handleConnection` before calling `track` — because awaiting is exactly what a
+real client does not do. The spec now drives the middleware the way Socket.IO
+does, so the ordering guarantee is asserted rather than assumed.
 
 ---
 

@@ -314,14 +314,14 @@ because this module did not exist — `TravelTimePort`'s own comment said so.
 
 ## 7 · What is deliberately not here
 
-| Not built                                   | Why                                                                                                                                                                                                |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Forward geocoding (typed address → lat/lng) | Only _reverse_ exists. Google Places on the frontend already returns coordinates, so the server never parses an address. Revisit for a plain text box or a non-Google client                       |
-| Google Maps / Places                        | Instalment 2. Reverse geocoding is still module 2's Nominatim adapter — a **swap** with a per-call bill, not an addition                                                                           |
-| Routes / ETA                                | Instalment 2. `TravelTimePort` still resolves to haversine, and module 4's tracking publishes a null ETA rather than a number nobody can stand behind                                              |
-| WebSockets                                  | Instalment 2, and the largest item in it: socket auth (the JWT guards are HTTP-only), a Fastify WS adapter, and Redis pub/sub once there is more than one instance. Tracking is a polled GET today |
-| Pro schedules                               | Dispatch still has no roster; `Pro.isAvailable` is a straight on/off flag. Genuinely new scope, not a gap                                                                                          |
-| PostGIS polygons                            | One function to replace when rectangles stop being enough                                                                                                                                          |
+| Not built                                            | Why                                                                                                                                                                                                |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Google Places autocomplete (typed address → lat/lng) | Only _reverse_ exists. Google Places on the frontend already returns coordinates, so the server never parses an address. Revisit for a plain text box or a non-Google client                       |
+| Google Maps / Places                                 | Instalment 2. Reverse geocoding is still module 2's Nominatim adapter — a **swap** with a per-call bill, not an addition                                                                           |
+| Routes / ETA                                         | Instalment 2. `TravelTimePort` still resolves to haversine, and module 4's tracking publishes a null ETA rather than a number nobody can stand behind                                              |
+| WebSockets                                           | Instalment 2, and the largest item in it: socket auth (the JWT guards are HTTP-only), a Fastify WS adapter, and Redis pub/sub once there is more than one instance. Tracking is a polled GET today |
+| Pro schedules                                        | Dispatch still has no roster; `Pro.isAvailable` is a straight on/off flag. Genuinely new scope, not a gap                                                                                          |
+| PostGIS polygons                                     | One function to replace when rectangles stop being enough                                                                                                                                          |
 
 ---
 
