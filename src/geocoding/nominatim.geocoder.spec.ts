@@ -1,5 +1,5 @@
 import { ServiceUnavailableException } from '@nestjs/common';
-import { AddressGeocoderService } from './address-geocoder.service';
+import { NominatimGeocoder } from './nominatim.geocoder';
 
 function buildDeps(values: Record<string, string> = {}) {
   const config = {
@@ -13,11 +13,11 @@ function buildDeps(values: Record<string, string> = {}) {
   return {
     config,
     redis,
-    service: new AddressGeocoderService(config as never, redis as never),
+    service: new NominatimGeocoder(config as never, redis as never),
   };
 }
 
-describe('AddressGeocoderService', () => {
+describe('NominatimGeocoder', () => {
   const originalFetch = global.fetch;
 
   afterEach(() => {
@@ -68,7 +68,9 @@ describe('AddressGeocoderService', () => {
       }),
     );
     expect(deps.redis.set).toHaveBeenCalledWith(
-      'geo:reverse:22.719600:75.857700',
+      // Provider-scoped: switching adapters must not serve a result the other
+      // one shaped, since the two format addressLine quite differently.
+      'geo:reverse:nominatim:22.719600:75.857700',
       expect.any(String),
       2_592_000,
     );
