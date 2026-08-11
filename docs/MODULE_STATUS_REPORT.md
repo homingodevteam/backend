@@ -16,23 +16,23 @@
 
 ## Status at a glance
 
-| #   | Module                    | Owns                                            | Status                                                               |
-| --- | ------------------------- | ----------------------------------------------- | -------------------------------------------------------------------- |
-| 1   | Identity & Access         | Role, AdminUser                                 | ✅ **Built** — 10/10 features                                        |
-| 2   | Customer Profile          | Customer, CustomerAddress                       | ✅ **Built** — 8/9 features; 1 out of scope per ERD                  |
-| 3   | Service Catalog           | ServiceCategory, Service, City                  | ✅ **Built** — 7/8 features; 1 half-cancelled by a ground rule       |
-| 4   | Booking & Job Lifecycle   | Booking, RecurringPlan, BookingStatusEvent, …   | ✅ **Built** — 19/22 features; 3 blocked on modules 5/10/13          |
-| 5   | Dispatch Engine           | AssignmentCandidate                             | ⬜ Not started (source model stubbed)                                |
-| 6   | Pro Management            | Pro, ProApplication, ProService, ProBankAccount | ✅ **Built** — 19/19 features                                        |
-| 7   | Payments                  | Order                                           | ⬜ Not started                                                       |
-| 8   | Commission & Payouts      | BookingCommission, CommissionPayout, …          | ⬜ Not started (source models stubbed)                               |
-| 9   | Ledger & Reconciliation   | LedgerEntry, …                                  | ⬜ Not started                                                       |
-| 10  | Training & Reviews        | TrainingModule, Review, …                       | ⬜ Not started (Review stubbed)                                      |
-| 11  | Safety & Support          | SosAlert, SupportTicket, TicketMessage          | ⬜ Not started                                                       |
-| 12  | Notifications             | NotificationLog                                 | ⬜ Not started                                                       |
-| 13  | Geo & Routing             | _(none — Redis only)_                           | 🟡 **Partial** — reverse geocode + city resolution built inside M2   |
-| 14  | Config & Server-Driven UI | PlatformSetting, UiConfig                       | 🟡 **Partial** — `PlatformSetting` model exists; no API, no UiConfig |
-| 15  | Admin Console & Reporting | AdminJob _(audit storage deferred)_             | ⬜ Not started; `AdminAuditLog` explicitly deferred                  |
+| #   | Module                    | Owns                                            | Status                                                                       |
+| --- | ------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| 1   | Identity & Access         | Role, AdminUser                                 | ✅ **Built** — 10/10 features                                                |
+| 2   | Customer Profile          | Customer, CustomerAddress                       | ✅ **Built** — 8/9 features; 1 out of scope per ERD                          |
+| 3   | Service Catalog           | ServiceCategory, Service, City                  | ✅ **Built** — 8/8; per-area availability now exists via module 13 (#42)     |
+| 4   | Booking & Job Lifecycle   | Booking, RecurringPlan, BookingStatusEvent, …   | ✅ **Built** — 19/22 features; 3 blocked on modules 5/10/13                  |
+| 5   | Dispatch Engine           | AssignmentCandidate                             | ✅ **Built** — 14/16 features (this row was stale; §5 below already said so) |
+| 6   | Pro Management            | Pro, ProApplication, ProService, ProBankAccount | ✅ **Built** — 19/19 features                                                |
+| 7   | Payments                  | Order, CashHandover                             | ✅ **Built** — 17/18 features; handover cadence unresolved by design         |
+| 8   | Commission & Payouts      | BookingCommission, CommissionPayout, …          | ⬜ Not started (source models stubbed)                                       |
+| 9   | Ledger & Reconciliation   | LedgerEntry, …                                  | ⬜ Not started                                                               |
+| 10  | Training & Reviews        | TrainingModule, Review, …                       | ⬜ Not started (Review stubbed)                                              |
+| 11  | Safety & Support          | SosAlert, SupportTicket, TicketMessage          | ⬜ Not started                                                               |
+| 12  | Notifications             | NotificationLog                                 | ⬜ Not started                                                               |
+| 13  | Geo & Routing             | Area, AreaService, ProArea                      | 🟡 **Partial** — service areas built; Google Maps, ETA and WebSockets next   |
+| 14  | Config & Server-Driven UI | PlatformSetting, UiConfig                       | 🟡 **Partial** — `PlatformSetting` model exists; no API, no UiConfig         |
+| 15  | Admin Console & Reporting | AdminJob _(audit storage deferred)_             | ⬜ Not started; `AdminAuditLog` explicitly deferred                          |
 
 "Stubbed" means the model exists in `prisma/schema.prisma` because a built module needed it as a foreign key or counter source — not that the module is partly built.
 
@@ -377,6 +377,88 @@ _Operations (6/6)_
 | 19  | Pro-facing profile/rating/acceptance/history views              | ✅ `ProStandingService`; earnings/commission/payout views read correctly and stay readable while suspended |
 
 **Closed since 2026-08-07:** KYC `pg_advisory_xact_lock` 500 (Prisma non-result execution); controlled per-Pro private-S3 profile-photo upload + attach flow; server-side masked-format enforcement for bank and Aadhaar values; legal name/DOB/gender copied from verified KYC on approval and locked against self-service mutation; public/private profile separation with a Pro-owned-field allow-list.
+
+---
+
+## 7 · Payments — 17/18 built
+
+Owns `Order` and `CashHandover`, plus the cash columns on `Booking` and
+`Pro.cashInHand`. Registers itself into module 4's `PAYMENTS_PORT` delegate at
+boot, and **only when Razorpay credentials are present** — with none set the app
+boots, cash runs end to end, and online bookings return module 4's honest 501.
+
+### Online
+
+| #   | Feature                                                          | Status                                                                                                                              |
+| --- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Order created server-side before checkout, booking refs in notes | ✅ Amount read from `Booking.flatPrice`, never from the request. Notes carry booking, service, city                                 |
+| 2   | Checkout handoff with the order id                               | ✅ Publishable key id only; the key secret never leaves the server                                                                  |
+| 3   | Server-side signature verification before any success            | ✅ **And the signature alone is not trusted** — the payment is then fetched and its status, order and amount asserted. Conflict #41 |
+| 4   | Webhook for authorized / captured / failed / refunded            | ✅ Six events; anything else is acknowledged and ignored so an ops dashboard change cannot break us                                 |
+| 5   | Idempotent webhook processing                                    | ✅ Convergent writes + forward-only status; Redis is a fast path correctness does not use. Conflict #40                             |
+| 6   | On capture: status, capturedPaymentId, paymentMethod, paidAt     | ✅ Written once. A different payment id on a paid order is refused and logged, never overwritten                                    |
+| 7   | `attempts` / `failureCode` mirrored; full list from Razorpay     | ✅ `GET /admin/orders/:id/attempts` fetches live and stores nothing                                                                 |
+| 8   | Full and partial refunds, both states, gateway ref captured      | ✅ `initiated` on the call, `settled` on `refund.processed`. `refundAmount` cumulative; `failed` leaves it standing                 |
+| 9   | Saved instruments via the gateway customer object                | ✅ Only `razorpayCustomerId` is stored. Degrades rather than failing checkout if creation fails                                     |
+| 10  | Reconciliation against Razorpay by order id                      | ✅ Computed, not persisted — `ReconciliationRun` is module 9's. Nothing is auto-corrected                                           |
+
+### Cash
+
+| #   | Feature                                                        | Status                                                                                                            |
+| --- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 11  | Mode gated on `Service.allowsCash` + city setting              | ✅ Both server-side, asked at creation because `paymentMode` is frozen there. **Reverses conflict #13** — see #37 |
+| 12  | Cash skips `awaiting_payment` and dispatches immediately       | ✅ Already module 4's fork; unchanged                                                                             |
+| 13  | Collection at the door; amount not editable                    | ✅ **No amount parameter exists**, and a CHECK constraint enforces `= flatPrice`                                  |
+| 14  | `Pro.cashInHand` accumulates; ledger to `cash_in_hand:<proId>` | 🟡 Balance built and moved transactionally. Ledger rows wait on module 9 via `LedgerPort`                         |
+| 15  | Recovery by handover, never by netting                         | ✅ Declare → confirm, two actors. The balance moves by what was **counted**, not what was declared                |
+| 16  | Cash ceiling stops cash assignment                             | ✅ Module 5 excludes over-ceiling Pros from **cash bookings only** — online work is unaffected                    |
+| 17  | Unpaid completion still completes and still pays commission    | ✅ Booking columns are the durable record; ticket delivery waits on module 11 via `SupportPort`                   |
+| 18  | Cash reconciliation: completed vs collected, balance vs ledger | ✅ Both checks. The balance check is what proves the `cashInHand` cache still agrees with its source              |
+
+**The one genuinely open item is not a feature.** Conflict #36(4): the ceiling
+caps each Pro's exposure but nothing **recovers** it. No mechanism chases a Pro
+who simply never declares a handover, and the cadence that would define one is
+undefined in the source documents too. Recorded rather than papered over.
+
+**Coordination events in this module** — each its own commit, per the ownership
+rule: `rawBody: true` in `main.ts` (#38); `register()` + `assertCashAllowed` on
+module 4's payments port; `Service.allowsCash` and its own migration (#37);
+`allowsCash` added to `toPublicService`; one optional parameter on module 5's
+`findEligiblePros`; three permission codes in module 1's constants.
+
+---
+
+## 13 · Geo & Routing — instalment 1 of 2: service areas
+
+Owns `Area`, `AreaService` and `ProArea`, plus the one function that turns a pin
+into an area. Full detail in
+[`MODULE_13_SERVICE_AREAS_PLAN.md`](MODULE_13_SERVICE_AREAS_PLAN.md).
+
+| Capability                                    | Status                                                                                                    |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| City divided into areas                       | ✅ **Rectangles**, laid as a generated grid — gapless and non-overlapping by construction (#42)           |
+| Per-area service availability                 | ✅ `AreaService`. **This is what #8 left impossible** — availability only, price stays national           |
+| Pin → area, server-side                       | ✅ One indexed range query on half-open bounds. No trigonometry on the request path                       |
+| Never trust a client-supplied area            | ✅ No endpoint anywhere accepts an `areaId`. Pin in, area out                                             |
+| Two distinct unavailable answers              | ✅ `LOCATION_NOT_SERVICEABLE` vs `SERVICE_NOT_AVAILABLE_IN_AREA` — different problems, different messages |
+| Re-validated at booking, not just at checkout | ✅ Booking re-resolves from the pin and freezes `Booking.areaId`                                          |
+| Pros posted to areas                          | ✅ `ProArea`, admin-set. A **filter** on dispatch; distance still ranks                                   |
+| Google Maps / Places / Routes / ETA           | ⬜ Instalment 2. Reverse geocoding is still module 2's Nominatim adapter                                  |
+| WebSocket live tracking                       | ⬜ Instalment 2. Tracking is a polled GET that reports staleness                                          |
+| Pro schedules / working hours                 | ⬜ Genuinely new scope — dispatch still has no roster                                                     |
+
+**The thing to know before enabling it.**
+`geo.enforceAreaServiceAvailability` ships **false**, per city. This is the
+first rule in the codebase whose only possible effect is to refuse a booking
+that would previously have succeeded, and with no areas drawn, enabling it would
+reject every booking in the product. The area is resolved and recorded
+regardless, and every would-be rejection is logged — so the evidence needed to
+flip a city on accumulates before anyone flips it. Conflict #43.
+
+**Coordination events:** `haversineKm` moved from `dispatch.types.ts` to
+`geo/geo.types.ts` (re-exported, so no import changed); one optional parameter
+on `findEligiblePros`; a third port on module 4 (`SERVICEABILITY_PORT`) and its
+call in booking creation.
 
 ---
 
