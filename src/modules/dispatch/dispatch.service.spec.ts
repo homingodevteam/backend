@@ -23,10 +23,12 @@ function buildDeps() {
       candidatePoolSize: 10,
       maxAttempts: 3,
       rotationCooldownJobs: 2,
-      maxTravelMinutes: 60,
+      travelSoftTargetMinutes: 30,
       assumedSpeedKmph: 20,
       ratingPriorMean: 4,
       ratingPriorWeight: 5,
+      neighbourMarginKm: 1,
+      allowWidenBeyondArea: true,
     }),
     findEligiblePros: jest.fn().mockResolvedValue([]),
     scoreOne: jest.fn(),
@@ -39,7 +41,11 @@ function buildDeps() {
   const cash = { blockedProIds: jest.fn().mockResolvedValue([]) };
   // Module 13's area posting. `null` means "nobody posted, so do not filter",
   // which leaves every existing expectation about eligibility unchanged.
-  const areas = { proIdsForArea: jest.fn().mockResolvedValue(null) };
+  const areas = {
+    proIdsForArea: jest.fn().mockResolvedValue(null),
+    proIdsForAreas: jest.fn().mockResolvedValue(null),
+    neighbourIdsOf: jest.fn().mockResolvedValue([]),
+  };
   return { prisma, redis, scoring, state, counters, cash, areas };
 }
 
@@ -135,26 +141,90 @@ describe('DispatchService', () => {
     });
 
     /**
-     * Module 13's area posting is a FILTER on the pool. Distance, rotation and
-     * smoothed rating still do the ranking — this only narrows who is in it.
+     * The widening ladder. A service can be bookable in an area that has
+     * nobody free to take it right now, and refusing the customer because a
+     * willing Pro sits outside a grid line an admin drew would be an arbitrary
+     * boundary doing real damage (#46).
      */
-    it('restricts the pool to Pros posted to the booking’s area', async () => {
-      const deps = buildDeps();
+    const aWinner = {
+      proId: 'pro-1',
+      excludedReason: null,
+      rank: 1,
+      travelTimeMinutes: 6,
+      finalRankScore: 0.9,
+    };
+
+    function inArea(deps: ReturnType<typeof buildDeps>, areaId = 'area-vn') {
       deps.prisma.booking.findUnique.mockResolvedValue({
         ...assigningBooking,
-        areaId: 'area-vn',
+        areaId,
       });
+      deps.scoring.scoreOne.mockResolvedValue(aWinner);
+      deps.scoring.rank.mockReturnValue([aWinner]);
+      return deps;
+    }
+
+    /** The last call is the one that actually drives the attempt. */
+    function poolOfLastCall(deps: ReturnType<typeof buildDeps>) {
+      const calls = deps.scoring.findEligiblePros.mock.calls as unknown[][];
+      return calls[calls.length - 1][3];
+    }
+
+    function tierOfPersistedRows(deps: ReturnType<typeof buildDeps>) {
+      const [[call]] = deps.prisma.assignmentCandidate.createMany.mock
+        .calls as [[{ data: Array<{ searchTier: string }> }]];
+      return call.data[0]?.searchTier;
+    }
+
+    it('stops at the area when someone there can take it', async () => {
+      const deps = inArea(buildDeps());
       deps.areas.proIdsForArea.mockResolvedValue(['pro-1', 'pro-2']);
-      const dispatch = build(deps);
+      deps.scoring.findEligiblePros.mockResolvedValue([{ id: 'pro-1' }]);
 
-      await dispatch.run('bk-1');
+      await build(deps).run('bk-1');
 
-      expect(deps.scoring.findEligiblePros).toHaveBeenCalledWith(
-        'svc-1',
-        'city-1',
-        [],
-        ['pro-1', 'pro-2'],
-      );
+      expect(poolOfLastCall(deps)).toEqual(['pro-1', 'pro-2']);
+      expect(deps.areas.neighbourIdsOf).not.toHaveBeenCalled();
+      expect(tierOfPersistedRows(deps)).toBe('area');
+    });
+
+    it('widens to neighbouring areas when nobody in the area is free', async () => {
+      const deps = inArea(buildDeps());
+      deps.areas.proIdsForArea.mockResolvedValue(['pro-busy']);
+      deps.areas.neighbourIdsOf.mockResolvedValue(['area-palasia']);
+      deps.areas.proIdsForAreas.mockResolvedValue([
+        'pro-busy',
+        'pro-next-door',
+      ]);
+      // Empty for the area's own pool, populated once the neighbours join it.
+      deps.scoring.findEligiblePros
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([{ id: 'pro-next-door' }]);
+
+      await build(deps).run('bk-1');
+
+      expect(poolOfLastCall(deps)).toEqual(['pro-busy', 'pro-next-door']);
+      expect(tierOfPersistedRows(deps)).toBe('neighbouring');
+    });
+
+    it('widens to the whole city when the neighbours are empty too', async () => {
+      const deps = inArea(buildDeps());
+      deps.areas.proIdsForArea.mockResolvedValue(['pro-busy']);
+      deps.areas.neighbourIdsOf.mockResolvedValue(['area-palasia']);
+      deps.areas.proIdsForAreas.mockResolvedValue([
+        'pro-busy',
+        'pro-also-busy',
+      ]);
+      deps.scoring.findEligiblePros
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([{ id: 'pro-far' }]);
+
+      await build(deps).run('bk-1');
+
+      // null = no area restriction; the city boundary is the only bound left.
+      expect(poolOfLastCall(deps)).toBeNull();
+      expect(tierOfPersistedRows(deps)).toBe('city');
     });
 
     /**
@@ -162,22 +232,40 @@ describe('DispatchService', () => {
      * supply gap: nobody posted means no filter, not "exclude everyone".
      */
     it('does not filter when nobody is posted to the area', async () => {
-      const deps = buildDeps();
-      deps.prisma.booking.findUnique.mockResolvedValue({
-        ...assigningBooking,
-        areaId: 'area-vn',
-      });
+      const deps = inArea(buildDeps());
       deps.areas.proIdsForArea.mockResolvedValue(null);
-      const dispatch = build(deps);
+      deps.scoring.findEligiblePros.mockResolvedValue([{ id: 'pro-1' }]);
 
-      await dispatch.run('bk-1');
+      await build(deps).run('bk-1');
 
-      expect(deps.scoring.findEligiblePros).toHaveBeenCalledWith(
-        'svc-1',
-        'city-1',
-        [],
-        null,
-      );
+      expect(poolOfLastCall(deps)).toBeNull();
+      // Nothing to widen *from*, so no neighbour lookup happens either.
+      expect(deps.areas.neighbourIdsOf).not.toHaveBeenCalled();
+    });
+
+    /** Strict mode: hold the boundary and let it read as no_supply. */
+    it('does not widen when the city forbids it', async () => {
+      const deps = inArea(buildDeps());
+      deps.scoring.loadSettings.mockResolvedValue({
+        ackWindowSeconds: 120,
+        candidatePoolSize: 10,
+        maxAttempts: 3,
+        rotationCooldownJobs: 2,
+        travelSoftTargetMinutes: 30,
+        assumedSpeedKmph: 20,
+        ratingPriorMean: 4,
+        ratingPriorWeight: 5,
+        neighbourMarginKm: 1,
+        allowWidenBeyondArea: false,
+      });
+      deps.areas.proIdsForArea.mockResolvedValue(['pro-busy']);
+      deps.scoring.findEligiblePros.mockResolvedValue([]);
+
+      const result = await build(deps).run('bk-1');
+
+      expect(deps.areas.neighbourIdsOf).not.toHaveBeenCalled();
+      expect(poolOfLastCall(deps)).toEqual(['pro-busy']);
+      expect(result.outcome).toBe('no_supply');
     });
 
     it('does not ask about areas for a booking that has none', async () => {
