@@ -68,6 +68,9 @@ Decisions here are binding. If one turns out wrong, change it here first.
 | 42  | Serviceability was city-wide; the business is area-wide            | 3/13     | `Area` + `AreaService` added. **Rectangles**, half-open bounds, gapless generated grid         |
 | 43  | A mandatory gate that can only reject, added to a live product     | 13       | Ships **off** per city; the area is recorded anyway so the evidence to enable it accrues first |
 | 44  | The proposed plan contradicted four shipped decisions              | 4/5/6/13 | All four kept: nine states, Redis GEO, `Pro` naming, no accept/reject (already true)           |
+| 45  | Pro is a salaried employee; §8 says commission is the only pay     | 8        | Salary stays external — payroll's job. This system pays the variable part only                 |
+| 46  | A service sellable in an area nobody is staffed for                | 5/13     | Gate at config time, widen at run time. Two failures, two fixes                                |
+| 47  | The 60-minute travel cap was a guess refusing real customers       | 5        | Cap removed. Proximity decays instead; the city boundary is the only bound                     |
 
 ---
 
@@ -1174,6 +1177,138 @@ and rejected on its merits, not overlooked.
 vocabulary in the schema (`Pro`) differ, deliberately. Renaming six tables and
 every `/pros/me/*` route to close a naming gap would be pure churn; the docs can
 say "employee" while the code says `Pro`, as they already do.
+
+---
+
+## 46 · A service sellable in an area nobody is staffed for
+
+**Modules 5 + 13 · Resolved 2026-08-11**
+
+`AreaService` says "we sell AC repair in Rau". `ProArea` plus eligibility says
+"someone can actually do it in Rau". They are configured **independently, by
+different people, for different reasons** — the catalogue owner and whoever
+runs staffing — and until now nothing noticed when they disagreed.
+
+You could switch a service on in an area with zero Pros posted to it. The
+catalogue would advertise it, `/geo/catalog` would report it available, a
+customer would book it, and dispatch would then fail to assign — with the
+booking stranded in `assigning` and no alert, because there is no scheduler.
+
+**The failure has two shapes and they need different answers:**
+
+| Shape                          | What it is                                         |
+| ------------------------------ | -------------------------------------------------- |
+| Nobody is posted here at all   | A **configuration** mistake. Permanent until fixed |
+| Posted, but all busy right now | A **timing** problem. Fixes itself in an hour      |
+
+This is #31's `no_supply` versus `exhausted` distinction one level up, and
+collapsing the two is the same mistake: a staffing gap gets triaged as a
+dispatch bug for months.
+
+**Decision: gate the first, widen for the second.**
+
+**Config time.** Activating a service in an area now requires at least one
+approved Pro posted there who holds it, or the call fails with
+`AREA_NOT_STAFFED_FOR_SERVICE`. This extends US-3.9's city-launch supply gate
+down one level — and it is now the more likely mistake of the two, because
+areas get configured far more often than cities get launched. It fails at the
+moment someone makes the error, to the person making it, which is the only
+time it is cheap to fix.
+
+Deliberately **only activation** is gated. Switching a service _off_ must
+always work, or an area that lost its last Pro could never be corrected —
+which is exactly when someone needs to switch it off. And the check counts
+approved Pros while **ignoring `isAvailable`**: that flag is today's roster,
+and a service must not become unsellable because everyone happens to be off
+shift this afternoon.
+
+**Run time.** When the area's own pool is momentarily empty, dispatch climbs a
+ladder — the area, then its neighbours, then the whole city — and stops at the
+first rung that yields anyone. Refusing a customer because a willing Pro sits
+three kilometres outside a grid line an admin drew would be an arbitrary
+boundary doing real damage.
+
+Neighbours are found by **expanding the area's rectangle and asking what it
+then overlaps** — two lines, and only possible because #42 made areas boxes.
+Same city only: widening a Bhopal booking into Indore because the grids happen
+to abut would be worse than not assigning it.
+
+**Widening is never silent.** `AssignmentCandidate.searchTier` records which
+rung produced each candidate, so "we served Rau from Vijay Nagar eleven times
+this week" is a query rather than an inference from which Pro happened to win.
+Without that column the only trace would be the winner's home address.
+
+`dispatch.allowWidenBeyondArea` turns the ladder off per city for anyone who
+wants strict boundaries.
+
+**Consequence:** a city can now be in a state where a service is _bookable_
+and _unstaffed_ — the gate only stops it being switched on, not staff leaving
+afterwards. Nothing yet re-checks. The `searchTier` index is the evidence
+someone will eventually build that alert on.
+
+**A bug found while building this.** The first version returned `[]` when
+nobody was posted to an area, which would have excluded every Pro in the city
+and reported `no_supply` for a city that had simply never had its Pros posted
+— the exact confusion #31 exists to prevent, reintroduced by the thing meant
+to fix it. `null` (no restriction) and `[]` (restrict to nobody) look alike
+and mean opposite things; the caught case is now a spec.
+
+---
+
+## 47 · The 60-minute travel cap was a guess refusing real customers
+
+**Module 5 · Resolved 2026-08-11**
+
+`dispatch.maxTravelMinutes` excluded any Pro whose estimated travel exceeded
+60 minutes, as `out_of_range`. Two things were wrong with it.
+
+**It was a guess applied to a guess.** The travel estimate is crow-flight
+distance over an assumed 20 km/h — no road network, no traffic (#29). Comparing
+that to a fixed 60 gave an arbitrary number the precision of a measurement it
+never had. Worse, the two settings multiplied into an **undocumented 20 km
+service radius** (`speed × maxMinutes ÷ 60`), so changing the assumed speed
+silently moved the boundary of where the platform operated.
+
+**It could only refuse.** A booking nobody within 60 minutes could take became
+`no_supply` — a customer turned away while a Pro 65 minutes out sat idle and
+willing.
+
+**Decision: remove the exclusion.** Nothing is refused for distance. Proximity
+still dominates the ranking — it is half the weight — but through a curve that
+**decays and never reaches zero**:
+
+```
+0 min → 1.00     target → 0.50     2× → 0.33     4× → 0.20
+```
+
+The old form (`1 - travel / maxTravel`, clamped at zero) could not survive the
+cap's removal: past the ceiling every candidate would tie at exactly 0, so a
+70-minute Pro and a 200-minute one would rank identically and **rotation would
+silently pick the winner**. The decay keeps distance ordering intact at any
+range.
+
+`dispatch.travelSoftTargetMinutes` replaces the cap and is a **scale, not a
+limit**. Doubling it admits nobody new — nobody was being refused — it flattens
+the curve, making dispatch weigh distance less against rating and rotation.
+That is a genuinely different knob from the one it replaced, which is why it
+got a new name rather than a new default.
+
+**What bounds the search now:** the city. `findEligiblePros` has always
+filtered by `cityId`, and that is a real operational boundary rather than a
+number derived from two guesses.
+
+**Consequence:** on a thin night a booking can be assigned to a Pro an hour and
+a half away, where before it would have been refused. That is the intended
+trade — a long trip beats no service — but it must not be invisible, so a
+winner past the soft target is logged with its travel time and search tier.
+`out_of_range` is no longer produced; the value stays legal so historical rows
+still read, and `dispatch.maxTravelMinutes` is kept with a description
+explaining its retirement rather than deleted, so a runbook reference resolves
+to an explanation instead of an absence.
+
+**Still true, and still the real limitation:** the estimate is crow-flight. A
+Pro across a river ranks better than the road says. Google Routes (module 13,
+instalment 2) is the fix; removing the cap does not pretend otherwise.
 
 ---
 
