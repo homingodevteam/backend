@@ -11,7 +11,18 @@ function buildDeps() {
   };
   const settings = { getString: jest.fn().mockResolvedValue('false') };
   const catalog = { listServices: jest.fn().mockResolvedValue([]) };
-  return { prisma, settings, catalog };
+  const geocoder = {
+    minIntervalMs: 0,
+    reverseGeocode: jest.fn().mockResolvedValue({
+      addressLine: '12 MG Road, Vijay Nagar, Indore, MP 452010, India',
+      cityCandidates: ['Indore'],
+      stateName: 'Madhya Pradesh',
+      postalCode: '452010',
+      provider: 'google',
+      attribution: 'Map data ©2026 Google',
+    }),
+  };
+  return { prisma, settings, catalog, geocoder };
 }
 
 function build(deps: ReturnType<typeof buildDeps>): LocationService {
@@ -19,6 +30,7 @@ function build(deps: ReturnType<typeof buildDeps>): LocationService {
     deps.prisma as never,
     deps.settings as never,
     deps.catalog as never,
+    deps.geocoder,
   );
 }
 
@@ -242,6 +254,47 @@ describe('LocationService · checkServiceability', () => {
         })
       ).serviceable,
     ).toBe(true);
+  });
+});
+
+describe('LocationService · reverseGeocode', () => {
+  /**
+   * One call, both halves. A client that has just dragged a pin renders the
+   * address and the availability banner together; two round trips let them
+   * disagree on screen for a beat.
+   */
+  it('returns the address and the resolved area together', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findMany.mockResolvedValue([anArea()]);
+
+    const result = await build(deps).reverseGeocode(22.7533, 75.8937);
+
+    expect(result.addressLine).toContain('MG Road');
+    expect(result.attribution).toBe('Map data ©2026 Google');
+    expect(result.area).toMatchObject({ areaName: 'Vijay Nagar' });
+  });
+
+  /**
+   * The address is the provider's; the area is ours. A pin outside our grid
+   * still has a perfectly good street address, and saying so is more useful
+   * than refusing to answer.
+   */
+  it('still returns an address for a pin we do not serve', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findMany.mockResolvedValue([]);
+
+    const result = await build(deps).reverseGeocode(23.2599, 77.4126);
+
+    expect(result.addressLine).toContain('MG Road');
+    expect(result.area).toBeNull();
+  });
+
+  it('rejects a malformed coordinate before calling the provider', async () => {
+    const deps = buildDeps();
+
+    expect(await statusOf(build(deps).reverseGeocode(Number.NaN, 75.89))).toBe(
+      400,
+    );
   });
 });
 

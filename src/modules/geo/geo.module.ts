@@ -5,7 +5,6 @@ import {
   SERVICEABILITY_PORT,
 } from '../bookings/ports/serviceability.port';
 import { CatalogModule } from '../catalog/catalog.module';
-import { CustomersModule } from '../customers/customers.module';
 import { IdentityModule } from '../identity/identity.module';
 import { AdminAreasController } from './admin-areas.controller';
 import { AreaNamingService } from './area-naming.service';
@@ -54,7 +53,7 @@ import { RealServiceabilityAdapter } from './real-serviceability.adapter';
   // module 4 owns, so there is no cycle.
   // CatalogModule for the location-filtered catalogue — the app's first
   // screen asks "what can I book here", which needs both halves.
-  imports: [IdentityModule, BookingsModule, CatalogModule, CustomersModule],
+  imports: [IdentityModule, BookingsModule, CatalogModule],
   controllers: [GeoController, AdminAreasController],
   providers: [
     LocationService,

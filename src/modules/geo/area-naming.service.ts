@@ -1,7 +1,7 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AddressGeocoderService } from '../customers/address-geocoder.service';
+import { GEOCODER, type GeocoderPort } from '../../geocoding/geocoding.types';
 import { boxCenter } from './geo.types';
 
 export interface NamingProgress {
@@ -51,19 +51,26 @@ export class AreaNamingService {
   private readonly running = new Set<string>();
 
   /**
-   * Gap between geocoder calls. Slightly over a second because the geocoder's
-   * own Redis lock *rejects* a second call inside the same second rather than
-   * queueing it — pacing the loop is cheaper than burning the budget on 503s.
+   * Gap between geocoder calls, **taken from whichever provider is wired**.
    *
-   * Writable so specs can drop it to a millisecond; a unit suite must not wait
-   * real seconds to prove the loop keeps going after a failure.
+   * Nominatim's public policy is one request per second for the whole
+   * application, and its Redis lock *rejects* a second call inside the same
+   * second rather than queueing — so pacing is cheaper than burning the budget
+   * on 503s. Google has a paid quota and no politeness interval, so the same
+   * 36-cell pass drops from over half a minute to a few seconds purely by
+   * configuring a key.
+   *
+   * Overridable so specs need not wait real seconds to prove the loop keeps
+   * going after a failure.
    */
-  paceMs = 1100;
+  paceMs: number;
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly geocoder: AddressGeocoderService,
-  ) {}
+    @Inject(GEOCODER) private readonly geocoder: GeocoderPort,
+  ) {
+    this.paceMs = geocoder.minIntervalMs;
+  }
 
   async progressFor(cityId: string): Promise<NamingProgress> {
     const [pending, suggested] = await Promise.all([

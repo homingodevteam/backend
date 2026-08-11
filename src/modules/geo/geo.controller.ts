@@ -8,6 +8,8 @@ import {
   LocationCatalogDto,
   LocationCatalogQueryDto,
   PublicAreaDto,
+  ReverseGeocodeDto,
+  ReverseGeocodeQueryDto,
   ResolveLocationQueryDto,
   ServiceabilityDto,
 } from './dto/area.dto';
@@ -28,6 +30,32 @@ import { LocationService } from './location.service';
 @Controller('geo')
 export class GeoController {
   constructor(private readonly location: LocationService) {}
+
+  @Get('reverse-geocode')
+  @ApiOperation({
+    summary: 'Turn a pin into a human-readable address',
+    description:
+      'For the moment a customer drags a map pin: render the address **and** ' +
+      'find out whether we operate there, in one call, so the two cannot ' +
+      'disagree on screen.\n\n' +
+      'The address comes from Google when a key is configured and from ' +
+      'OpenStreetMap otherwise — `provider` says which. The **area** is always ' +
+      "resolved from our own grid; a provider's idea of a neighbourhood has " +
+      'nothing to do with where we have posted Pros.\n\n' +
+      '`attribution` **must be displayed** wherever the address is shown. Both ' +
+      'providers require it.',
+  })
+  @ApiOkEnvelope(ReverseGeocodeDto)
+  @ApiErrorEnvelope(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNPROCESSABLE_ENTITY,
+    HttpStatus.SERVICE_UNAVAILABLE,
+  )
+  reverseGeocode(
+    @Query() query: ReverseGeocodeQueryDto,
+  ): Promise<ReverseGeocodeDto> {
+    return this.location.reverseGeocode(query.lat, query.lng);
+  }
 
   @Get('catalog')
   @ApiOperation({

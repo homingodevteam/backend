@@ -1,5 +1,6 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { apiError } from '../../common/utils';
+import { GEOCODER, type GeocoderPort } from '../../geocoding/geocoding.types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformSettingsService } from '../bookings/platform-settings.service';
 import { BrowseServicesQueryDto } from '../catalog/dto/browse-services-query.dto';
@@ -20,6 +21,7 @@ export class LocationService {
     private readonly prisma: PrismaService,
     private readonly settings: PlatformSettingsService,
     private readonly catalog: ServiceCatalogService,
+    @Inject(GEOCODER) private readonly geocoder: GeocoderPort,
   ) {}
 
   /**
@@ -213,6 +215,30 @@ export class LocationService {
         code: result.code!,
       },
     ]);
+  }
+
+  /**
+   * A pin turned into words, and the area it falls in.
+   *
+   * Both halves in one call deliberately. A client that has just dragged a map
+   * pin wants to render "12 MG Road, Vijay Nagar" *and* know whether we serve
+   * there; splitting that into two round trips lets the two disagree on
+   * screen, with the address updating a beat before the availability banner.
+   *
+   * The address comes from whichever provider is configured — Google when a
+   * key is present, OpenStreetMap otherwise. The **area does not**: that is
+   * always resolved from our own grid, because a provider's idea of a
+   * neighbourhood has nothing to do with where we have posted Pros.
+   */
+  async reverseGeocode(lat: number, lng: number) {
+    // Both are pure reads and neither depends on the other, so the client
+    // waits for the slower rather than the sum.
+    const [geocoded, area] = await Promise.all([
+      this.geocoder.reverseGeocode(lat, lng),
+      this.resolveArea(lat, lng),
+    ]);
+
+    return { ...geocoded, area };
   }
 
   /**

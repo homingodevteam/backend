@@ -384,6 +384,72 @@ export class ServiceabilityDto {
   code?: string;
 }
 
+export class ReverseGeocodeQueryDto {
+  @ApiProperty({ example: 22.7533 })
+  @Type(() => Number)
+  @IsLatitude()
+  lat: number;
+
+  @ApiProperty({ example: 75.8937 })
+  @Type(() => Number)
+  @IsLongitude()
+  lng: number;
+}
+
+/**
+ * A pin turned into words, plus the area it falls in.
+ *
+ * Both halves in one call deliberately: a client that has just moved a map pin
+ * wants to show "12 MG Road, Vijay Nagar" *and* know whether we serve it, and
+ * making that two round trips means the two can disagree on screen.
+ */
+export class ReverseGeocodeDto {
+  @ApiProperty({
+    example: '12 MG Road, Vijay Nagar, Indore, MP 452010, India',
+    description: 'Human-readable, as the provider formats it.',
+  })
+  addressLine: string;
+
+  @ApiPropertyOptional({ nullable: true, example: 'Madhya Pradesh' })
+  stateName: string | null;
+
+  @ApiPropertyOptional({ nullable: true, example: '452010' })
+  postalCode: string | null;
+
+  @ApiProperty({
+    example: 'Indore',
+    isArray: true,
+    description:
+      'Every name the provider offers for the settlement, best first. The ' +
+      'server matches these against its own city list; a client should show ' +
+      'the first.',
+  })
+  cityCandidates: string[];
+
+  @ApiProperty({
+    enum: ['nominatim', 'google'],
+    description: 'Which provider answered. Useful when an address looks wrong.',
+  })
+  provider: string;
+
+  @ApiProperty({
+    example: 'Map data ©2026 Google',
+    description:
+      '**Must be displayed** wherever the address is shown — both providers ' +
+      'require it, Google by licence and OpenStreetMap by ODbL.',
+  })
+  attribution: string;
+
+  @ApiPropertyOptional({
+    type: ResolvedAreaDto,
+    nullable: true,
+    description:
+      'The service area containing this pin, or null if we do not operate ' +
+      'here. Saves a second round trip to /geo/serviceability.',
+  })
+  area: ResolvedAreaDto | null;
+}
+
 /** Query for the location-filtered catalogue. */
 export class LocationCatalogQueryDto {
   @ApiProperty({ example: 22.7533 })
