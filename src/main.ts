@@ -15,6 +15,17 @@ async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter(),
+    {
+      // Razorpay signs each webhook with an HMAC over the EXACT bytes it
+      // delivered. Parsing and re-serialising does not round-trip key order,
+      // unicode escaping or whitespace, so verifying against the parsed body
+      // fails intermittently and unreproducibly — the worst failure mode
+      // available to code that decides whether a customer has paid.
+      //
+      // This is the only reason the option is on, and module 7's webhook
+      // handler is its only reader. See CONFLICTS_AND_DECISIONS #38.
+      rawBody: true,
+    },
   );
 
   const config = app.get(ConfigService);
