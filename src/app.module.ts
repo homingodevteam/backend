@@ -9,6 +9,8 @@ import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { IdentityModule } from './modules/identity/identity.module';
+import { GeoModule } from './modules/geo/geo.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import { ProsModule } from './modules/pros/pros.module';
 
 // NODE_ENV picks the override file; `.env` is always the fallback beneath it.
@@ -30,6 +32,11 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
     CustomersModule,
     ProsModule,
     BookingsModule,
+    // Payments and Geo before Dispatch: dispatch filters the candidate pool by
+    // the cash ceiling and by area posting, and Nest instantiates in import
+    // order. Both register into module 4's port delegates on construction.
+    PaymentsModule,
+    GeoModule,
     DispatchModule,
   ],
   controllers: [AppController],
