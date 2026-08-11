@@ -5,7 +5,9 @@ import {
   DISPATCH_PORT,
   NoOpDispatchService,
 } from '../bookings/ports/dispatch.port';
+import { GeoModule } from '../geo/geo.module';
 import { IdentityModule } from '../identity/identity.module';
+import { PaymentsModule } from '../payments/payments.module';
 import { ProsModule } from '../pros/pros.module';
 import { AdminDispatchController } from './admin-dispatch.controller';
 import { DispatchScoringService } from './dispatch-scoring.service';
@@ -34,7 +36,19 @@ import {
  * an ETA, which is why module 4's tracking view still returns a null ETA.
  */
 @Module({
-  imports: [IdentityModule, RedisModule, ProsModule, BookingsModule],
+  // Two imports, each for exactly one filter on the candidate pool:
+  //   PaymentsModule → the cash ceiling (module 7, feature 16)
+  //   GeoModule      → which Pros are posted to the booking's area (module 13)
+  // Both are filters. Neither touches the ranking, which is still distance,
+  // rotation and smoothed rating.
+  imports: [
+    IdentityModule,
+    RedisModule,
+    ProsModule,
+    BookingsModule,
+    PaymentsModule,
+    GeoModule,
+  ],
   controllers: [ProDispatchController, AdminDispatchController],
   providers: [
     DispatchService,
