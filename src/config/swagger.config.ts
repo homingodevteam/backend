@@ -50,6 +50,17 @@ export function setupSwagger(
   );
 
   SwaggerModule.setup(path, app, document, {
+    /**
+     * `/docs/json`, not Nest's default `/docs-json`.
+     *
+     * API_CONVENTIONS §2 publishes `/docs/json` as the URL a client generator
+     * points at, and it is binding on every module — so the contract is the
+     * fixed point and the default is what moves. Before this, the documented
+     * URL 404'd and only the undocumented one worked, which is the worst way
+     * round: the people following the convention were the ones it failed.
+     */
+    jsonDocumentUrl: `${path}/json`,
+    yamlDocumentUrl: `${path}/yaml`,
     swaggerOptions: {
       // Keep the token across page reloads so you are not re-pasting it.
       persistAuthorization: true,
@@ -59,6 +70,9 @@ export function setupSwagger(
     customSiteTitle: `${config.get<string>('APP_NAME', 'Homingo')} API docs`,
   });
 
-  Logger.log(`Swagger docs mounted at /${path}`, 'Swagger');
+  Logger.log(
+    `Swagger docs mounted at /${path} — spec at /${path}/json and /${path}/yaml`,
+    'Swagger',
+  );
   return path;
 }
