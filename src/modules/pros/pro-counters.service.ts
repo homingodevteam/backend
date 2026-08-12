@@ -202,6 +202,16 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * @deprecated Module 10 (`src/modules/reviews`) owns review writing. This
+   * method has never had a caller, and now has a live counterpart that handles
+   * both reviewer directions, the submission window and the customer counters.
+   *
+   * Left in place because deleting from module 6's folder is not this change's
+   * to make — but it is dead, and two implementations of one rule with one of
+   * them unreachable is precisely how CONFLICTS_AND_DECISIONS #56 happened.
+   * Remove it.
+   */
   async recordReview(input: {
     bookingId: string;
     customerId: string;
@@ -218,9 +228,17 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
       throw apiError('rating must be an integer from 1 to 5');
     }
     await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`review:${input.bookingId}`}, 0))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`review:${input.bookingId}:customer`}, 0))`;
+      // Compound now that a booking can hold both directions. Repaired rather
+      // than deleted only because this file belongs to module 6 — see the
+      // @deprecated note above.
       const existing = await tx.review.findUnique({
-        where: { bookingId: input.bookingId },
+        where: {
+          bookingId_reviewerType: {
+            bookingId: input.bookingId,
+            reviewerType: 'customer',
+          },
+        },
       });
       if (existing) return;
       const booking = await tx.booking.findUnique({
@@ -242,6 +260,7 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
           bookingId: input.bookingId,
           customerId: input.customerId,
           proId: input.proId,
+          reviewerType: 'customer',
           rating: input.rating,
           comment: input.comment,
           tags: input.tags ?? [],
@@ -257,6 +276,27 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Rebuild every derived counter from its source rows.
+   *
+   * ## Why every rating query here filters on `reviewerType`
+   *
+   * CONFLICTS_AND_DECISIONS #61. A `reviews` row carries both participants —
+   * `proId` and `customerId` — and `reviewerType` is the only thing that says
+   * which of them WROTE it. A Pro's review of a customer therefore sits inside
+   * the `GROUP BY "proId"` bucket, because the Pro is its author.
+   *
+   * This query used to have no filter, correctly, because until module 10
+   * there was only one direction. Unfiltered now, it folds a Pro's opinion of
+   * a customer into that Pro's own public rating at 02:00 — and since this is
+   * the job that *corrects* drift, the wrong number would look authoritative.
+   * A Pro diligent about flagging difficult households would quietly rate
+   * themselves down.
+   *
+   * `pro-counters.service.spec.ts` writes one review in each direction and
+   * asserts a rebuild leaves the Pro exactly where the customer's review put
+   * them.
+   */
   async rebuildAll(): Promise<boolean> {
     const locked = await this.redis.setIfAbsent(REBUILD_LOCK, '1', 3600);
     if (!locked) return false;
@@ -266,11 +306,15 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
           ratingDrift: bigint;
           assignmentDrift: bigint;
           completionDrift: bigint;
+          customerRatingDrift: bigint;
         }[]
       >`
         WITH ratings AS (
           SELECT "proId", COALESCE(SUM("rating"), 0)::int AS sum, COUNT(*)::int AS count
-          FROM "reviews" GROUP BY "proId"
+          FROM "reviews" WHERE "reviewerType" = 'customer' GROUP BY "proId"
+        ), customer_ratings AS (
+          SELECT "customerId", COALESCE(SUM("rating"), 0)::int AS sum, COUNT(*)::int AS count
+          FROM "reviews" WHERE "reviewerType" = 'pro' GROUP BY "customerId"
         ), offers AS (
           SELECT "proId", COUNT(*)::int AS count FROM "assignment_candidates"
           WHERE "isWinner" = true GROUP BY "proId"
@@ -284,7 +328,13 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
         SELECT
           COUNT(*) FILTER (WHERE p."ratingSum" <> COALESCE(r.sum, 0) OR p."ratingCount" <> COALESCE(r.count, 0)) AS "ratingDrift",
           COUNT(*) FILTER (WHERE p."assignmentsOffered" <> COALESCE(o.count, 0) OR p."assignmentsAcknowledged" <> COALESCE(a.count, 0)) AS "assignmentDrift",
-          COUNT(*) FILTER (WHERE p."completedJobs" <> COALESCE(c.count, 0)) AS "completionDrift"
+          COUNT(*) FILTER (WHERE p."completedJobs" <> COALESCE(c.count, 0)) AS "completionDrift",
+          (
+            SELECT COUNT(*) FROM "customers" cu
+            LEFT JOIN customer_ratings cr ON cr."customerId" = cu.id
+            WHERE cu."ratingSum" <> COALESCE(cr.sum, 0)
+               OR cu."ratingCount" <> COALESCE(cr.count, 0)
+          ) AS "customerRatingDrift"
         FROM "pros" p
         LEFT JOIN ratings r ON r."proId" = p.id
         LEFT JOIN offers o ON o."proId" = p.id
@@ -306,11 +356,16 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
           `Completed-job counter drift detected for ${drift.completionDrift} Pros`,
         );
       }
+      if (drift?.customerRatingDrift > 0n) {
+        this.logger.error(
+          `Rating counter drift detected for ${drift.customerRatingDrift} customers`,
+        );
+      }
 
       await this.prisma.$executeRaw`
         WITH ratings AS (
           SELECT "proId", COALESCE(SUM("rating"), 0)::int AS sum, COUNT(*)::int AS count
-          FROM "reviews" GROUP BY "proId"
+          FROM "reviews" WHERE "reviewerType" = 'customer' GROUP BY "proId"
         ), offers AS (
           SELECT "proId", COUNT(*)::int AS count FROM "assignment_candidates"
           WHERE "isWinner" = true GROUP BY "proId"
@@ -342,6 +397,29 @@ export class ProCountersService implements OnModuleInit, OnModuleDestroy {
           "completedJobs" = rebuilt.completed,
           "countersRebuiltAt" = CURRENT_TIMESTAMP
         FROM rebuilt WHERE p.id = rebuilt.id
+      `;
+
+      /**
+       * The mirrored half — `Customer.ratingSum` / `ratingCount` from the Pro
+       * direction. Its own statement rather than another CTE in the one above,
+       * because that one's `rebuilt` set is keyed on `pros.id` and a customer
+       * with no Pro-authored review must still be reset to zero.
+       */
+      await this.prisma.$executeRaw`
+        WITH customer_ratings AS (
+          SELECT "customerId", COALESCE(SUM("rating"), 0)::int AS sum, COUNT(*)::int AS count
+          FROM "reviews" WHERE "reviewerType" = 'pro' GROUP BY "customerId"
+        ), rebuilt AS (
+          SELECT cu.id,
+            COALESCE(cr.sum, 0) AS rating_sum,
+            COALESCE(cr.count, 0) AS rating_count
+          FROM "customers" cu
+          LEFT JOIN customer_ratings cr ON cr."customerId" = cu.id
+        )
+        UPDATE "customers" cu SET
+          "ratingSum" = rebuilt.rating_sum,
+          "ratingCount" = rebuilt.rating_count
+        FROM rebuilt WHERE cu.id = rebuilt.id
       `;
       return true;
     } finally {
