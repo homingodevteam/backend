@@ -419,6 +419,52 @@ export class LocationCatalogDto {
   services: LocationServiceDto[];
 }
 
+/** A Pro posted to an area, named rather than referenced by id. */
+export class ProPostingDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  fullName: string | null;
+
+  @ApiProperty()
+  phone: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  employeeCode: string | null;
+
+  @ApiProperty({
+    enum: ['applied', 'under_review', 'approved', 'suspended', 'rejected'],
+  })
+  status: string;
+
+  @ApiProperty({
+    description: 'On/off duty — separate from being posted here.',
+  })
+  isAvailable: boolean;
+}
+
+/** An area a Pro is posted to, carrying its city so the name reads alone. */
+export class AreaPostingDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'Vijay Nagar' })
+  name: string;
+
+  @ApiProperty()
+  isActive: boolean;
+
+  @ApiProperty()
+  cityId: string;
+
+  @ApiProperty({ example: 'Indore' })
+  cityName: string;
+
+  @ApiProperty({ example: 'Madhya Pradesh' })
+  cityState: string;
+}
+
 export class AreaOverlapDto {
   @ApiProperty()
   areaId: string;

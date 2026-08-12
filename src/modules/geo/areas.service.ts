@@ -2,6 +2,7 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { apiError } from '../../common/utils';
 import type { Area, AreaService as AreaServiceRow } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import type { AreaPostingDto, ProPostingDto } from './dto/area.dto';
 import {
   boxAreaSqKm,
   boxDimensionsKm,
@@ -609,6 +610,71 @@ export class AreasService {
 
     if (rows.length === 0) return null;
     return rows.map((row) => row.proId);
+  }
+
+  /**
+   * The same postings, shaped for a person rather than for dispatch.
+   *
+   * Deliberately separate from {@link proIdsForArea}: that one answers a
+   * filtering question and encodes "nobody posted" as `null`, which is exactly
+   * the wrong shape for a screen. This one always returns a list, and returns
+   * names — a console showing bare uuids tells an admin nothing.
+   */
+  prosForArea(areaId: string): Promise<ProPostingDto[]> {
+    return this.prisma.proArea
+      .findMany({
+        where: { areaId, isActive: true },
+        select: {
+          pro: {
+            select: {
+              id: true,
+              fullName: true,
+              phone: true,
+              employeeCode: true,
+              status: true,
+              isAvailable: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+      .then((rows) => rows.map((row) => row.pro));
+  }
+
+  /**
+   * The inverse lookup: where is this one Pro posted?
+   *
+   * Answering it from the area side would mean one call per area, so it lives
+   * here as a single query. Named `by-pro` on the controller to match the
+   * `by-service` route that already inverts the other relation.
+   */
+  areasForPro(proId: string): Promise<AreaPostingDto[]> {
+    return this.prisma.proArea
+      .findMany({
+        where: { proId, isActive: true },
+        select: {
+          area: {
+            select: {
+              id: true,
+              name: true,
+              isActive: true,
+              cityId: true,
+              city: { select: { name: true, state: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+      .then((rows) =>
+        rows.map(({ area }) => ({
+          id: area.id,
+          name: area.name,
+          isActive: area.isActive,
+          cityId: area.cityId,
+          cityName: area.city.name,
+          cityState: area.city.state,
+        })),
+      );
   }
 }
 

@@ -24,10 +24,12 @@ import { AreasService } from './areas.service';
 import {
   AreaDto,
   AreaOverlapDto,
+  AreaPostingDto,
   BulkCreateAreasDto,
   CopyAreaServicesDto,
   CreateAreaDto,
   GenerateGridDto,
+  ProPostingDto,
   SetAreaServiceDto,
   SetAreaServicesDto,
   SetProAreaDto,
@@ -326,14 +328,34 @@ export class AdminAreasController {
 
   @Get(':id/pros')
   @RequirePermissions(PermissionCode.PRO_AVAILABILITY_SET)
-  @ApiOperation({ summary: 'Pros posted to this area' })
-  @ApiOkEnvelope()
+  @ApiOperation({
+    summary: 'Pros posted to this area',
+    description:
+      'Named, and always a list — dispatch reads the same postings through a ' +
+      'different shape (ids, `null` for none) because it is answering a filter ' +
+      'question, not drawing a screen.',
+  })
+  @ApiOkEnvelope(ProPostingDto, { isArray: true })
   @ApiErrorEnvelope(
     HttpStatus.UNAUTHORIZED,
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  prosForArea(@Param('id') id: string) {
-    return this.areas.proIdsForArea(id);
+  prosForArea(@Param('id') id: string): Promise<ProPostingDto[]> {
+    return this.areas.prosForArea(id);
+  }
+
+  @Get('by-pro/:proId')
+  @RequirePermissions(PermissionCode.PRO_AVAILABILITY_SET)
+  @ApiOperation({
+    summary: 'Where one Pro is posted',
+    description:
+      'The inverse of `:id/pros`, so a Pro’s own screen can answer "where ' +
+      'does this person work" in one call instead of one per area.',
+  })
+  @ApiOkEnvelope(AreaPostingDto, { isArray: true })
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
+  areasForPro(@Param('proId') proId: string): Promise<AreaPostingDto[]> {
+    return this.areas.areasForPro(proId);
   }
 }

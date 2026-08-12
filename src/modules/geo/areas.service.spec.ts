@@ -521,3 +521,76 @@ describe('AreasService · proIdsForArea', () => {
     );
   });
 });
+
+describe('AreasService · admin-shaped postings', () => {
+  /**
+   * The whole reason this exists next to proIdsForArea: a console rendering
+   * `null` and a console rendering bare uuids are both useless, and dispatch
+   * needs exactly those two things.
+   */
+  it('returns an empty list — not null — when nobody is posted', async () => {
+    const deps = buildDeps();
+    deps.prisma.proArea.findMany.mockResolvedValue([]);
+
+    expect(await build(deps).prosForArea('area-vn')).toEqual([]);
+  });
+
+  it('unwraps the nested pro so the caller gets people, not join rows', async () => {
+    const deps = buildDeps();
+    deps.prisma.proArea.findMany.mockResolvedValue([
+      {
+        pro: {
+          id: 'pro-1',
+          fullName: 'Ramesh',
+          phone: '+91900',
+          status: 'approved',
+        },
+      },
+    ]);
+
+    expect(await build(deps).prosForArea('area-vn')).toEqual([
+      { id: 'pro-1', fullName: 'Ramesh', phone: '+91900', status: 'approved' },
+    ]);
+  });
+
+  it('flattens the city onto each area a Pro is posted to', async () => {
+    const deps = buildDeps();
+    deps.prisma.proArea.findMany.mockResolvedValue([
+      {
+        area: {
+          id: 'area-vn',
+          name: 'Vijay Nagar',
+          isActive: true,
+          cityId: 'city-indore',
+          city: { name: 'Indore', state: 'Madhya Pradesh' },
+        },
+      },
+    ]);
+
+    expect(await build(deps).areasForPro('pro-1')).toEqual([
+      {
+        id: 'area-vn',
+        name: 'Vijay Nagar',
+        isActive: true,
+        cityId: 'city-indore',
+        cityName: 'Indore',
+        cityState: 'Madhya Pradesh',
+      },
+    ]);
+  });
+
+  it('asks only for active postings in both directions', async () => {
+    const deps = buildDeps();
+    const service = build(deps);
+
+    await service.prosForArea('area-vn');
+    expect(deps.prisma.proArea.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { areaId: 'area-vn', isActive: true } }),
+    );
+
+    await service.areasForPro('pro-1');
+    expect(deps.prisma.proArea.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { proId: 'pro-1', isActive: true } }),
+    );
+  });
+});
