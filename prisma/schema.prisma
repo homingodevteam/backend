@@ -34,6 +34,7 @@ model City {
   pros             Pro[]
   platformSettings PlatformSetting[]
   areas            Area[]
+  incentives       Incentive[]
 
   @@index([isActive])
   @@map("cities")
@@ -170,7 +171,9 @@ model ServiceCategory {
   parentCategory   ServiceCategory?  @relation("CategoryTree", fields: [parentCategoryId], references: [id], onDelete: Restrict)
   childCategories  ServiceCategory[] @relation("CategoryTree")
 
-  services Service[]
+  services         Service[]
+  trainingModules  TrainingModule[]
+  trainingSessions OfflineTrainingSession[]
 
   @@index([parentCategoryId, sortOrder])
   @@index([isActive])
@@ -267,13 +270,21 @@ model AdminUser {
   isActive    Boolean   @default(true)
   lastLoginAt DateTime?
 
-  aadhaarDocumentVerifications ProApplication[]   @relation("AadhaarDocumentVerifier")
-  panDocumentVerifications     ProApplication[]   @relation("PanDocumentVerifier")
+  aadhaarDocumentVerifications ProApplication[]            @relation("AadhaarDocumentVerifier")
+  panDocumentVerifications     ProApplication[]            @relation("PanDocumentVerifier")
   platformSettingsUpdated      PlatformSetting[]
-  overriddenBookings           Booking[]          @relation("BookingOverrideAdmin")
-  approvedCommissionPayouts    CommissionPayout[] @relation("PayoutApprover")
-  confirmedCashHandovers       CashHandover[]     @relation("CashHandoverConfirmer")
-  refundedOrders               Order[]            @relation("OrderRefundInitiator")
+  overriddenBookings           Booking[]                   @relation("BookingOverrideAdmin")
+  approvedCommissionPayouts    CommissionPayout[]          @relation("PayoutApprover")
+  confirmedCashHandovers       CashHandover[]              @relation("CashHandoverConfirmer")
+  refundedOrders               Order[]                     @relation("OrderRefundInitiator")
+  reversedCommissions          BookingCommission[]         @relation("CommissionReverser")
+  createdIncentives            Incentive[]                 @relation("IncentiveCreator")
+  raisedPayoutDeductions       PayoutDeduction[]           @relation("DeductionRaiser")
+  waivedPayoutDeductions       PayoutDeduction[]           @relation("DeductionWaiver")
+  disbursedCommissionPayouts   CommissionPayout[]          @relation("PayoutDisburser")
+  resolvedDiscrepancies        ReconciliationDiscrepancy[]
+  hiddenReviews                Review[]                    @relation("ReviewModerator")
+  markedTrainingAttendance     OfflineTrainingAttendance[] @relation("AttendanceMarker")
 
   @@map("admin_users")
 }
@@ -308,11 +319,23 @@ model Customer {
   defaultAddressId String? @db.Uuid
   isBlocked        Boolean @default(false)
 
+  /// Exact integer counters mirroring `Pro.ratingSum` / `ratingCount`, fed by
+  /// **Pro→customer** reviews only and rebuilt by the same nightly job.
+  ///
+  /// Read by ops and by the next Pro's job card. **Nothing automatic consumes
+  /// them** — no dispatch input, no pricing input, no block. A household
+  /// quietly losing service from a signal it cannot see, with no notice and no
+  /// appeal, is a worse outcome than a Pro walking in forewarned. Acting on a
+  /// pattern here is a human decision through `isBlocked` above.
+  ratingSum   Int @default(0)
+  ratingCount Int @default(0)
+
   addresses      CustomerAddress[]
   bookings       Booking[]
   recurringPlans RecurringPlan[]
   reviews        Review[]
   orders         Order[]
+  ledgerEntries  LedgerEntry[]
 
   @@index([status, createdAt])
   @@map("customers")
@@ -443,11 +466,17 @@ model Pro {
   /// Employment start date.
   approvedAt DateTime?
 
-  applications         ProApplication[]      @relation("ProApplications")
+  /// RazorpayX contact id, created once on the first disbursement and reused
+  /// forever after. Module 8 writes it; nothing reads it but the payout path.
+  /// Held on the Pro rather than the bank account because a contact is the
+  /// *person* in RazorpayX's model and survives them changing banks.
+  razorpayxContactId String?
+
+  applications         ProApplication[]            @relation("ProApplications")
   services             ProService[]
   bankAccounts         ProBankAccount[]
   bookings             Booking[]
-  startOtpVerifiedJobs Booking[]             @relation("BookingStartOtpVerifier")
+  startOtpVerifiedJobs Booking[]                   @relation("BookingStartOtpVerifier")
   photoProofs          JobPhotoProof[]
   assignmentCandidates AssignmentCandidate[]
   reviews              Review[]
@@ -455,6 +484,11 @@ model Pro {
   payouts              CommissionPayout[]
   cashHandovers        CashHandover[]
   areas                ProArea[]
+  incentiveProgress    ProIncentiveProgress[]
+  payoutDeductions     PayoutDeduction[]
+  ledgerEntries        LedgerEntry[]
+  trainingProgress     ProTrainingProgress[]
+  trainingAttendance   OfflineTrainingAttendance[]
 
   @@index([status])
   @@index([isAvailable])
@@ -565,6 +599,18 @@ model ProBankAccount {
 
   isPrimary  Boolean @default(false)
   isVerified Boolean @default(false)
+
+  /// RazorpayX fund account id — the payable destination behind this row.
+  ///
+  /// It has to exist because `accountNumberMasked` is exactly that: masked,
+  /// and a masked number cannot be paid to. Module 8 creates a **VPA** fund
+  /// account from `upiId` on the first payout, because that is the one
+  /// instrument stored here in full. A *bank* fund account can only be created
+  /// while the unmasked number is in hand, which is module 2's verification
+  /// step — this column is the seam for it. See CONFLICTS_AND_DECISIONS #51.
+  razorpayxFundAccountId   String?
+  /// vpa | bank_account — which rail `razorpayxFundAccountId` points at.
+  razorpayxFundAccountType String?
 
   payouts CommissionPayout[]
 
@@ -684,8 +730,11 @@ model Booking {
   statusEvents         BookingStatusEvent[]
   chatMessages         ChatMessage[]
   photoProofs          JobPhotoProof[]
-  review               Review?
+  /// Up to two — one per direction. Was `Review?` back when a booking could
+  /// only be reviewed by its customer.
+  reviews              Review[]
   commission           BookingCommission?
+  ledgerEntries        LedgerEntry[]
   /// Online only, and plural: an expired or voided order is reissued rather
   /// than mutated, so the gateway history stays readable by receipt.
   orders               Order[]
@@ -846,8 +895,9 @@ model Order {
   refundStatus     String    @default("none")
   refundedAt       DateTime?
 
-  refundInitiatedByAdminId String?    @db.Uuid
-  refundInitiatedByAdmin   AdminUser? @relation("OrderRefundInitiator", fields: [refundInitiatedByAdminId], references: [id], onDelete: SetNull)
+  refundInitiatedByAdminId String?       @db.Uuid
+  refundInitiatedByAdmin   AdminUser?    @relation("OrderRefundInitiator", fields: [refundInitiatedByAdminId], references: [id], onDelete: SetNull)
+  ledgerEntries            LedgerEntry[]
 
   @@index([bookingId, createdAt])
   @@index([customerId, createdAt])
@@ -981,25 +1031,68 @@ model BookingStatusEvent {
   @@map("booking_status_events")
 }
 
+/// One booking produces up to two rows, one per direction, and they are not
+/// symmetric in what they mean or who may see them.
+///
+/// | | `reviewerType = 'customer'` | `reviewerType = 'pro'` |
+/// | -- | -- | -- |
+/// | Author  | the customer | the assigned Pro |
+/// | Subject | the Pro | the customer |
+/// | Visible | publicly, on the Pro's profile | ops and the next Pro only |
+/// | Counters | `Pro.ratingSum` | `Customer.ratingSum` |
+/// | Drives  | the dispatch tie-break | **nothing** |
+///
+/// `proId` and `customerId` are the two **participants**, not the author and
+/// the subject — which direction a row is depends on `reviewerType` and
+/// nothing else. Read that wrong and a Pro's rating absorbs their own opinion
+/// of a customer; see CONFLICTS_AND_DECISIONS #61 for the version of this that
+/// nearly shipped.
 model Review {
   id        String   @id @default(uuid()) @db.Uuid
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  bookingId  String   @unique @db.Uuid
+  bookingId  String   @db.Uuid
   booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   customerId String   @db.Uuid
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
   proId      String   @db.Uuid
   pro        Pro      @relation(fields: [proId], references: [id], onDelete: Restrict)
 
-  rating       Int
-  comment      String?
-  tags         Json    @default("[]")
-  isHidden     Boolean @default(false)
-  hiddenReason String?
+  /// customer | pro — WHO WROTE IT. Defaulted so the rows that existed before
+  /// the second direction did are what they always were.
+  reviewerType String @default("customer")
 
-  @@index([proId, createdAt])
+  rating    Int
+  /// Customer direction only. The Pro direction is tags, and a `comment` sent
+  /// with it is a 400 rather than a silently dropped field — free text about a
+  /// household, held internally and shown to strangers arriving at their door,
+  /// is the one thing this design refuses.
+  comment   String?
+  /// A controlled vocabulary in both directions, validated in code. An
+  /// unvalidated tag list is a free-text field with extra steps and cannot be
+  /// aggregated into the pattern ops actually needs.
+  tags      Json    @default("[]")
+  /// Private S3 keys, never public URLs. Customer direction only.
+  photoUrls Json    @default("[]")
+
+  /// Moderation hides the **content**, never the score. A one-star review with
+  /// an abusive sentence is still a one-star experience, and dropping the
+  /// rating would let moderation quietly launder an average — as well as split
+  /// the live counter from the nightly rebuild, which counts rows.
+  isHidden        Boolean    @default(false)
+  hiddenReason    String?
+  hiddenByAdminId String?    @db.Uuid
+  hiddenByAdmin   AdminUser? @relation("ReviewModerator", fields: [hiddenByAdminId], references: [id], onDelete: SetNull)
+  hiddenAt        DateTime?
+
+  /// Was `bookingId @unique`, which allowed exactly one row per booking and so
+  /// made the second direction impossible to write at all.
+  @@unique([bookingId, reviewerType])
+  @@index([proId, reviewerType, createdAt])
+  /// The customer advisory query — every Pro-authored row about one household.
+  @@index([customerId, reviewerType, createdAt])
+  @@index([hiddenByAdminId])
   @@map("reviews")
 }
 
@@ -1013,23 +1106,55 @@ model BookingCommission {
   proId     String  @db.Uuid
   pro       Pro     @relation(fields: [proId], references: [id], onDelete: Restrict)
 
-  customerFlatAmount    Decimal  @db.Decimal(12, 2)
+  customerFlatAmount    Decimal @db.Decimal(12, 2)
+  /// Recorded because the ERD asks for it, and **never read by the
+  /// calculation**. One flat rate per service: a four-hour job pays exactly
+  /// what a one-hour one does (CONFLICTS_AND_DECISIONS #18). There is a spec
+  /// that asserts changing this changes no amount.
   actualDurationMinutes Int?
+  /// SNAPSHOT of `Service.commissionType` / `commissionValue` at computation.
+  /// This pair is why editing a service tomorrow cannot restate what was paid
+  /// yesterday (US-8.3) — the live catalogue row is never re-read.
   commissionType        String
-  commissionValue       Decimal  @db.Decimal(12, 2)
-  commissionAmount      Decimal  @db.Decimal(12, 2)
-  platformAmount        Decimal  @db.Decimal(12, 2)
-  incentiveAmount       Decimal  @default(0) @db.Decimal(12, 2)
-  deductionAmount       Decimal  @default(0) @db.Decimal(12, 2)
-  netPayable            Decimal  @db.Decimal(12, 2)
-  status                String   @default("pending")
-  computedAt            DateTime @default(now())
+  commissionValue       Decimal @db.Decimal(12, 2)
+  /// What the **Pro earns**, not what the platform takes. `netPayable` is
+  /// built from it, which is what settles the direction — see
+  /// CONFLICTS_AND_DECISIONS #52.
+  commissionAmount      Decimal @db.Decimal(12, 2)
+  /// `customerFlatAmount - commissionAmount`, always. Never computed
+  /// independently, so the two provably sum to the price.
+  platformAmount        Decimal @db.Decimal(12, 2)
+
+  incentiveAmount Decimal  @default(0) @db.Decimal(12, 2)
+  deductionAmount Decimal  @default(0) @db.Decimal(12, 2)
+  netPayable      Decimal  @db.Decimal(12, 2)
+  /// pending | approved | paid | reversed
+  status          String   @default("pending")
+  computedAt      DateTime @default(now())
+
+  /// Set when the hold window elapses with no dispute. Only `approved` rows
+  /// are ever swept into a payout (US-8.9).
+  approvedAt DateTime?
+
+  /// A reversed row keeps whatever status it reached. If it was already
+  /// `paid`, it **stays** paid — it was — and the recovery becomes a
+  /// `PayoutDeduction` instead. Nothing is ever debited from a bank account.
+  reversedAt        DateTime?
+  reversalReason    String?
+  reversedByAdminId String?    @db.Uuid
+  reversedByAdmin   AdminUser? @relation("CommissionReverser", fields: [reversedByAdminId], references: [id], onDelete: SetNull)
 
   payoutId String?           @db.Uuid
   payout   CommissionPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
+  incentiveContributions ProIncentiveContribution[]
+  creditedIncentives     ProIncentiveProgress[]
+  deductions             PayoutDeduction[]
+
   @@index([proId, computedAt])
   @@index([payoutId])
+  /// The batching query: approved, unpaid, oldest first.
+  @@index([status, proId, computedAt])
   @@map("booking_commissions")
 }
 
@@ -1043,12 +1168,17 @@ model CommissionPayout {
   bankAccountId String         @db.Uuid
   bankAccount   ProBankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
 
+  /// The period this batch is *labelled* with. It is not the inclusion filter:
+  /// a commission approved late (held behind a dispute) would otherwise be
+  /// orphaned by every later batch. Inclusion is "approved and unpaid as of
+  /// periodEnd" — see `payout-batch.service.ts`.
   periodStart       DateTime   @db.Date
   periodEnd         DateTime   @db.Date
   commissionAmount  Decimal    @db.Decimal(12, 2)
   incentiveAmount   Decimal    @default(0) @db.Decimal(12, 2)
   deductionAmount   Decimal    @default(0) @db.Decimal(12, 2)
   netAmount         Decimal    @db.Decimal(12, 2)
+  /// draft | approved | processing | paid | failed | rejected
   status            String     @default("draft")
   approvedByAdminId String?    @db.Uuid
   approvedByAdmin   AdminUser? @relation("PayoutApprover", fields: [approvedByAdminId], references: [id], onDelete: SetNull)
@@ -1056,10 +1186,502 @@ model CommissionPayout {
   paidAt            DateTime?
   payoutReference   String?
 
+  /// Who pressed send. Separate from the approver on purpose: `payout.approve`
+  /// and `payout.disburse` are different grants, and storing both is what
+  /// makes the two-person control auditable rather than merely intended.
+  disbursedByAdminId String?    @db.Uuid
+  disbursedByAdmin   AdminUser? @relation("PayoutDisburser", fields: [disbursedByAdminId], references: [id], onDelete: SetNull)
+  disbursedAt        DateTime?
+
+  /// Sent to RazorpayX as `X-Payout-Idempotency`. Unique here as well as
+  /// there, so a double-submit cannot become a double payment even if the
+  /// request never reaches them. A retry mints a **new** key — deliberately,
+  /// because reusing one would make RazorpayX replay the original response
+  /// rather than attempt the transfer again.
+  idempotencyKey String? @unique
+  /// vpa | bank_account
+  payoutMode     String?
+  attemptCount   Int     @default(0)
+  /// Why the last attempt failed, in RazorpayX's words. Shown to finance,
+  /// never to the Pro — they see "payment failed", which is the true part.
+  failureReason  String?
+
   commissions BookingCommission[]
+  deductions  PayoutDeduction[]
+
+  ledgerEntries LedgerEntry[]
 
   @@index([proId, periodEnd])
+  @@index([status, periodEnd])
   @@map("commission_payouts")
+}
+
+/// A bonus scheme. Criteria live in JSON because the four types ask entirely
+/// different questions; the shape is validated per type at write time, so a
+/// malformed scheme is rejected at creation rather than discovered at payout.
+model Incentive {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name        String
+  description String?
+
+  /// jobs_count | rating | streak | surge_slot
+  ///
+  /// Only the first two have evaluators. The other two are accepted so a
+  /// scheme can be configured, and every read surfaces `hasEvaluator: false`
+  /// for them — the failure a Pro must never hit is a bonus advertised in the
+  /// app that silently never pays (see 3.6 of the module plan).
+  incentiveType String
+
+  /// once | daily | weekly | monthly
+  ///
+  /// "Complete 20 jobs → ₹2,000" is a different promise depending on whether
+  /// it can be won again next month. Progress is keyed by the period this
+  /// yields, so a recurring scheme genuinely restarts instead of being
+  /// permanently locked by a single unique row.
+  recurrence String @default("once")
+
+  criteriaJson Json
+  rewardAmount Decimal @db.Decimal(12, 2)
+
+  /// Null = every city.
+  cityId String? @db.Uuid
+  city   City?   @relation(fields: [cityId], references: [id], onDelete: Cascade)
+
+  validFrom DateTime
+  validTo   DateTime?
+  isActive  Boolean   @default(true)
+
+  createdByAdminId String?    @db.Uuid
+  createdByAdmin   AdminUser? @relation("IncentiveCreator", fields: [createdByAdminId], references: [id], onDelete: SetNull)
+
+  progress ProIncentiveProgress[]
+
+  @@index([isActive, validFrom, validTo])
+  @@index([cityId, isActive])
+  @@map("incentives")
+}
+
+/// One Pro's run at one incentive, in one period.
+model ProIncentiveProgress {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId       String    @db.Uuid
+  pro         Pro       @relation(fields: [proId], references: [id], onDelete: Cascade)
+  incentiveId String    @db.Uuid
+  incentive   Incentive @relation(fields: [incentiveId], references: [id], onDelete: Cascade)
+
+  /// `lifetime`, `2026-08`, `2026-W33` or `2026-08-12`, derived from
+  /// `Incentive.recurrence`. Part of the unique key, which is what lets a
+  /// monthly scheme be won again in September.
+  periodKey   String
+  periodStart DateTime
+  periodEnd   DateTime
+
+  /// Derived: the sum of non-reversed `ProIncentiveContribution.value`.
+  /// Stored so the Pro app can render a progress bar without an aggregate per
+  /// row, and recomputed from the contributions whenever one is unwound.
+  progressValue Decimal @default(0) @db.Decimal(12, 2)
+  targetValue   Decimal @db.Decimal(12, 2)
+
+  achievedAt     DateTime?
+  rewardCredited Boolean   @default(false)
+  /// SNAPSHOT of `Incentive.rewardAmount` at the moment it was credited, for
+  /// the same reason the commission rate is snapshotted: editing the scheme
+  /// must not restate a bonus already earned.
+  rewardAmount   Decimal?  @db.Decimal(12, 2)
+
+  /// The job the reward was credited against. A reversal of that job follows
+  /// this back to unwind the bonus (US-8.7's edge).
+  commissionId String?            @db.Uuid
+  commission   BookingCommission? @relation(fields: [commissionId], references: [id], onDelete: SetNull)
+
+  contributions ProIncentiveContribution[]
+
+  @@unique([proId, incentiveId, periodKey])
+  @@index([proId, achievedAt])
+  @@map("pro_incentive_progress")
+}
+
+/// Which job contributed how much toward which incentive run.
+///
+/// Progress used to be a bare number with a single `commissionId` pointing at
+/// whichever job happened to tip it over. That records the *trigger* and
+/// forgets the other forty-nine jobs, so a reversal of any of them had nothing
+/// to follow and the progress silently kept a job it no longer had. These rows
+/// are the real history: progress is their sum, and unwinding one is a delete
+/// plus a recount rather than a guess.
+model ProIncentiveContribution {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+
+  progressId String               @db.Uuid
+  progress   ProIncentiveProgress @relation(fields: [progressId], references: [id], onDelete: Cascade)
+
+  commissionId String            @db.Uuid
+  commission   BookingCommission @relation(fields: [commissionId], references: [id], onDelete: Cascade)
+
+  /// 1 for a job-count scheme; the rating given, for a rating scheme.
+  value Decimal @db.Decimal(12, 2)
+
+  /// One contribution per job per incentive run. The guard against a retried
+  /// completion counting the same job twice toward the same bonus.
+  @@unique([progressId, commissionId])
+  @@index([commissionId])
+  @@map("pro_incentive_contributions")
+}
+
+/// Money owed back to the platform, carried forward to the next payout.
+///
+/// A ROW, not a running total on the Pro. A scalar could not say what the
+/// money was for, would double-apply on a retry, and would be unauditable —
+/// and this is the mechanism that exists specifically so nothing is ever
+/// debited from a Pro's bank account (US-8.14).
+model PayoutDeduction {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId String @db.Uuid
+  pro   Pro    @relation(fields: [proId], references: [id], onDelete: Restrict)
+
+  amount         Decimal @db.Decimal(12, 2)
+  /// Consumption is **partial** by design. A deduction larger than a period's
+  /// earnings takes what it can and waits for the rest, so a payout is never
+  /// negative and the debt is never silently written off.
+  consumedAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  /// commission_reversal | incentive_unwind | manual
+  kind   String
+  reason String
+
+  sourceCommissionId String?            @db.Uuid
+  sourceCommission   BookingCommission? @relation(fields: [sourceCommissionId], references: [id], onDelete: SetNull)
+
+  /// Exactly-once key for the automatic kinds — `reversal:<commissionId>`,
+  /// `incentive_unwind:<progressId>`. Null for a manual deduction, because
+  /// Postgres treats NULLs as distinct and ops may legitimately raise two
+  /// against the same job. This single unique column is what makes "the same
+  /// reversal cannot deduct twice" a database guarantee rather than a hope.
+  dedupeKey String? @unique
+
+  consumedByPayoutId String?           @db.Uuid
+  consumedByPayout   CommissionPayout? @relation(fields: [consumedByPayoutId], references: [id], onDelete: SetNull)
+  fullyConsumedAt    DateTime?
+
+  waivedAt        DateTime?
+  waiveReason     String?
+  waivedByAdminId String?    @db.Uuid
+  waivedByAdmin   AdminUser? @relation("DeductionWaiver", fields: [waivedByAdminId], references: [id], onDelete: SetNull)
+
+  raisedByAdminId String?    @db.Uuid
+  raisedByAdmin   AdminUser? @relation("DeductionRaiser", fields: [raisedByAdminId], references: [id], onDelete: SetNull)
+
+  /// The outstanding-debt query: this Pro, not waived, not fully consumed.
+  /// Named, because what it is *for* is not obvious from its three columns.
+  @@index([proId, fullyConsumedAt, waivedAt], map: "payout_deductions_proId_outstanding_idx")
+  @@map("payout_deductions")
+}
+
+// =====================================================================
+// 08 · TRAINING
+// =====================================================================
+//
+// There is no enrolment table for online modules and no per-Pro assignment
+// list. What a Pro must study is a QUERY:
+//
+//   Pro → ProService (isActive) → Service → categoryId → walk ancestors
+//       → TrainingModule for that set of categories
+//
+// So adding a service to a Pro changes their curriculum in the same instant,
+// and there is no second copy of the answer to drift. The ancestor walk is
+// what makes "trade-level" mean anything in a category tree: a module attached
+// to Plumbing reaches every Pro who does any plumbing service, and one
+// attached to Drainage reaches only those.
+
+model TrainingModule {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categoryId String          @db.Uuid
+  category   ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  title       String
+  description String?
+
+  /// video | doc | checklist | quiz
+  contentType  String
+  /// Private S3 key for platform-uploaded content. Read through a presigned
+  /// GET like every other private object here — but with a six-hour TTL, not
+  /// the five minutes a KYC document gets. A 48 MB video on Indian mobile data
+  /// does not finish downloading in five minutes.
+  contentKey   String?
+  /// Absolute URL for content hosted somewhere else. Exactly one of
+  /// `contentKey` / `contentUrl` is set, enforced by a CHECK.
+  contentUrl   String?
+  /// Object size. The app cannot honour "download on wifi only" without it.
+  contentBytes Int?
+
+  /// Bumped whenever the content behind a module is replaced.
+  ///
+  /// The one correctness-critical field in the offline manifest: without it,
+  /// swapping a video leaves every Pro who already downloaded the old one
+  /// watching last month's procedure, with nothing to tell them or their app.
+  version Int @default(1)
+
+  /// The answer key. **Never serialised to a Pro** — there is a spec that
+  /// walks the Pro-facing DTO and fails if this key appears anywhere in it.
+  /// Grading happens on the server because a score the Pro's own phone
+  /// computed is not the defensible signal the feature asks for.
+  ///
+  /// Shape: `{ "<questionId>": "b" }` or `{ "<questionId>": ["a","c"] }`.
+  quizAnswerKey   Json?
+  /// Per-module override of `training.quizPassPercent`.
+  quizPassPercent Int?
+
+  /// Gates `ProService.isActive` — but only where `training.gateActivation` is
+  /// on, which it is not by default. See TrainingGatePort.
+  isMandatory Boolean @default(false)
+
+  durationMinutes Int?
+  sortOrder       Int     @default(0)
+  isActive        Boolean @default(true)
+
+  progress ProTrainingProgress[]
+
+  @@index([categoryId, sortOrder])
+  @@index([isActive])
+  @@map("training_modules")
+}
+
+model ProTrainingProgress {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proId    String         @db.Uuid
+  pro      Pro            @relation(fields: [proId], references: [id], onDelete: Cascade)
+  moduleId String         @db.Uuid
+  module   TrainingModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  /// not_started | in_progress | completed
+  status              String @default("not_started")
+  percentComplete     Int    @default(0)
+  /// Where to resume. An interrupted forty-minute video that restarts from
+  /// zero is a video nobody finishes twice.
+  lastPositionSeconds Int    @default(0)
+
+  quizAttempts  Int       @default(0)
+  /// The most recent attempt — what to show.
+  quizScore     Decimal?  @db.Decimal(5, 2)
+  /// The best attempt — what the gate reads, so a curious retake cannot
+  /// un-qualify someone who already passed.
+  bestQuizScore Decimal?  @db.Decimal(5, 2)
+  /// Attempts exhausted. Cleared by an admin; a cap with no reset path is a
+  /// Pro permanently unable to work.
+  lockedAt      DateTime?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@unique([proId, moduleId])
+  @@index([proId, status])
+  @@index([moduleId])
+  @@map("pro_training_progress")
+}
+
+/// Client-run classroom and field training. Scheduling, enrolment and
+/// attendance are all admin actions — a Pro reads their own sessions and
+/// nothing else.
+model OfflineTrainingSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categoryId String          @db.Uuid
+  category   ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  title           String
+  venue           String
+  scheduledAt     DateTime
+  durationMinutes Int?
+  trainerName     String?
+  capacity        Int
+
+  /// scheduled | held | cancelled
+  status String @default("scheduled")
+
+  attendance OfflineTrainingAttendance[]
+
+  @@index([status, scheduledAt])
+  @@index([categoryId, scheduledAt])
+  @@map("offline_training_sessions")
+}
+
+model OfflineTrainingAttendance {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessionId String                 @db.Uuid
+  session   OfflineTrainingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  proId     String                 @db.Uuid
+  pro       Pro                    @relation(fields: [proId], references: [id], onDelete: Cascade)
+
+  enrolledAt DateTime @default(now())
+
+  attended        Boolean    @default(false)
+  markedByAdminId String?    @db.Uuid
+  markedByAdmin   AdminUser? @relation("AttendanceMarker", fields: [markedByAdminId], references: [id], onDelete: SetNull)
+  markedAt        DateTime?
+  completionNotes String?
+
+  /// Enrolling the same Pro twice is a bug, not a second seat — and capacity
+  /// is counted from these rows.
+  @@unique([sessionId, proId])
+  @@index([proId])
+  @@index([markedByAdminId])
+  @@map("offline_training_attendance")
+}
+
+// =====================================================================
+// 09 · LEDGER & RECONCILIATION
+// =====================================================================
+
+/// The books. Append-only: there is a trigger on this table that raises on
+/// UPDATE and DELETE, so immutability is a property of the database rather
+/// than a rule somebody has to remember.
+///
+/// **One row, two legs.** `debitAccount` and `creditAccount` both live here, as
+/// the ERD models it, which makes every row balanced by construction — there is
+/// no way to write half an entry. An account's balance is
+/// `sum(credits) - sum(debits)` over this table.
+model LedgerEntry {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+
+  /// Gap-free, assigned under the same advisory lock that reads `prevHash`.
+  /// Deliberately not a Postgres sequence: `nextval` is non-transactional, so a
+  /// rolled-back insert would leave a hole, and a hole in a hash chain is
+  /// indistinguishable from a deletion.
+  sequence  BigInt   @unique
+  entryDate DateTime
+
+  /// charge | refund | platform_revenue | pro_commission | deduction | incentive
+  ///
+  /// `platform_revenue` is in the vocabulary because the ERD names it, and
+  /// nothing writes it: the platform's share is `revenue:bookings` less
+  /// `expense:pro_commission`, and a stored copy would be a second figure to
+  /// drift. The dashboard computes it.
+  txnType       String
+  debitAccount  String
+  creditAccount String
+  amount        Decimal @db.Decimal(12, 2)
+  currency      String  @default("INR")
+
+  bookingId  String?           @db.Uuid
+  booking    Booking?          @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  /// Null for cash bookings — they have no `Order` row at all.
+  orderId    String?           @db.Uuid
+  order      Order?            @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  payoutId   String?           @db.Uuid
+  payout     CommissionPayout? @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  proId      String?           @db.Uuid
+  pro        Pro?              @relation(fields: [proId], references: [id], onDelete: Restrict)
+  customerId String?           @db.Uuid
+  customer   Customer?         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  /// A gateway reference, not a local foreign key.
+  razorpayPaymentId String?
+
+  /// Exactly-once key — `capture:<orderId>`, `accrual:<commissionId>`. Same
+  /// mechanism as `PayoutDeduction.dedupeKey`: a retried webhook or a re-run
+  /// sweeper must not append a second entry for one event, and a unique index
+  /// is the only version of that guarantee which survives a race.
+  sourceRef String @unique
+
+  prevHash  String
+  entryHash String @unique
+
+  @@index([entryDate])
+  @@index([debitAccount, entryDate])
+  @@index([creditAccount, entryDate])
+  @@index([proId, entryDate])
+  @@map("ledger_entries")
+}
+
+/// One execution of the nightly cross-check.
+///
+/// The reconciliation *answer* was always recomputable from `Order`, `Booking`
+/// and `CashHandover`; what module 7 could not record was the history of having
+/// asked. This is that row.
+model ReconciliationRun {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+
+  runDate DateTime @db.Date
+  /// money | cash | ledger | both | all
+  scope   String
+
+  startedAt     DateTime
+  completedAt   DateTime?
+  /// running | completed | failed
+  status        String    @default("running")
+  /// Set when `status = failed`, so a run that died is distinguishable from a
+  /// run that found nothing.
+  failureReason String?
+
+  entriesScanned      Int     @default(0)
+  bookingsScanned     Int     @default(0)
+  ordersScanned       Int     @default(0)
+  countersRebuilt     Boolean @default(false)
+  discrepancyCount    Int     @default(0)
+  totalVarianceAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  discrepancies ReconciliationDiscrepancy[]
+
+  @@index([runDate])
+  @@index([status, startedAt])
+  @@map("reconciliation_runs")
+}
+
+/// A question for a human. **Nothing here is auto-corrected** — silently making
+/// our row match the gateway's would destroy the only evidence that they ever
+/// differed.
+model ReconciliationDiscrepancy {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runId String            @db.Uuid
+  run   ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  /// The six kinds module 7 already detects, plus the four this module adds:
+  /// missing_ledger_entry | ledger_amount_mismatch | orphan_ledger_entry |
+  /// chain_broken
+  kind      String
+  /// A razorpayOrderId, a bookingNumber, a proId or a ledger sequence, by kind.
+  reference String
+  ours      String?
+  theirs    String?
+  variance  String?
+  detail    String
+
+  resolvedAt        DateTime?
+  resolutionNotes   String?
+  resolvedByAdminId String?    @db.Uuid
+  resolvedByAdmin   AdminUser? @relation(fields: [resolvedByAdminId], references: [id], onDelete: SetNull)
+
+  /// The open-work query, and the reason a repeat of the same finding on the
+  /// next run does not bury yesterday's unresolved one.
+  @@index([resolvedAt, kind])
+  @@index([runId])
+  @@map("reconciliation_discrepancies")
 }
 
 model PlatformSetting {
