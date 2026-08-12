@@ -4,6 +4,10 @@ import type { Order } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { fromPaise, toPaise } from './payments.money';
 import { advanceRefundStatus, type RefundStatus } from './payments.types';
+import {
+  COMMISSION_REVERSAL_PORT,
+  type CommissionReversalPort,
+} from './ports/commission-reversal.port';
 import { LEDGER_PORT, type LedgerPort } from './ports/ledger.port';
 import { RazorpayClient } from './razorpay.client';
 
@@ -15,6 +19,8 @@ export class RefundsService {
     private readonly prisma: PrismaService,
     private readonly razorpay: RazorpayClient,
     @Inject(LEDGER_PORT) private readonly ledger: LedgerPort,
+    @Inject(COMMISSION_REVERSAL_PORT)
+    private readonly commissionReversal: CommissionReversalPort,
   ) {}
 
   /**
@@ -136,6 +142,30 @@ export class RefundsService {
       where: { id: order.bookingId },
       data: { refundedAmount: fromPaise(cumulativePaise) },
     });
+
+    // Module 8. Non-fatal: the refund has already succeeded at the gateway by
+    // this point, and failing the call now would tell the caller nothing was
+    // refunded when the customer's money is already on its way back.
+    //
+    // Only a FULL refund reverses the Pro's pay. A partial is discretionary —
+    // ops returning part of the fee on a job the Pro did properly — and taking
+    // their whole commission for it would punish them for somebody else's
+    // decision. Module 8 logs the partial; ops reverses by hand if the Pro is
+    // genuinely at fault.
+    try {
+      await this.commissionReversal.onRefund({
+        bookingId: order.bookingId,
+        amount: fromPaise(requestedPaise),
+        isFullRefund: cumulativePaise >= capturedPaise,
+        reason: input.reason,
+        adminId: input.adminId,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Refund on booking ${order.bookingId} succeeded, but the Pro's commission was not reversed.`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
 
     return updated;
   }

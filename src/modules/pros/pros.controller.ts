@@ -152,24 +152,15 @@ export class ProsController {
     return this.standingService.commissions(user.id, query);
   }
 
-  @Get('payouts')
-  @AllowSuspendedProRead()
-  @ApiOperation({ summary: 'My payout history' })
-  @ApiOkEnvelope()
-  payouts(
-    @CurrentUser() user: AuthenticatedUser,
-    @Query() query: HistoryQueryDto,
-  ) {
-    return this.standingService.payouts(user.id, query);
-  }
-
-  @Get('payouts/:id')
-  @AllowSuspendedProRead()
-  @ApiOperation({ summary: 'One payout and the commissions it covered' })
-  @ApiOkEnvelope()
-  payout(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
-    return this.standingService.payout(user.id, id);
-  }
+  // `GET pros/me/payouts` and `GET pros/me/payouts/:id` used to live here.
+  //
+  // They were written before module 8 existed, reading `CommissionPayout`
+  // directly because nothing else could. Module 8 now owns that table and
+  // serves both routes from `ProEarningsController`, with the deductions, the
+  // line items and the bank reference this version had no way to produce.
+  //
+  // Two controllers cannot declare the same route — Fastify refuses to start,
+  // which is how this was found. See CONFLICTS_AND_DECISIONS #56.
 
   @Post('location')
   @ApiOperation({

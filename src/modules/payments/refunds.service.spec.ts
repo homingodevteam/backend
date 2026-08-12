@@ -8,7 +8,11 @@ function buildDeps() {
   };
   const razorpay = { createRefund: jest.fn() };
   const ledger = { recordRefund: jest.fn() };
-  return { prisma, razorpay, ledger };
+  // Module 8's reversal hook, through the port this module owns.
+  const commissionReversal = {
+    onRefund: jest.fn().mockResolvedValue(undefined),
+  };
+  return { prisma, razorpay, ledger, commissionReversal };
 }
 
 function build(deps: ReturnType<typeof buildDeps>): RefundsService {
@@ -16,6 +20,7 @@ function build(deps: ReturnType<typeof buildDeps>): RefundsService {
     deps.prisma as never,
     deps.razorpay as never,
     deps.ledger as never,
+    deps.commissionReversal,
   );
 }
 

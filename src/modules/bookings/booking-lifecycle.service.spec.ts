@@ -39,6 +39,12 @@ function buildDeps() {
     sendOtp: jest.fn().mockResolvedValue({ providerRef: 'ref-1' }),
     verifyOtp: jest.fn(),
   };
+  // Module 8's completion hook. Resolved by default so the lifecycle tests
+  // stay about the lifecycle; the one case that matters here — a failing
+  // commission must not fail the completion — has its own test.
+  const commission = {
+    recordCompletion: jest.fn().mockResolvedValue(undefined),
+  };
   return {
     prisma,
     state,
@@ -49,6 +55,7 @@ function buildDeps() {
     settings,
     config,
     otp,
+    commission,
   };
 }
 
@@ -65,6 +72,7 @@ function buildService(
     deps.settings as never,
     deps.config as never,
     deps.otp,
+    deps.commission,
   );
 }
 
