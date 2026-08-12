@@ -56,7 +56,7 @@ async function main(): Promise<void> {
       'dispatch.override',
       // A one-star spree is a roster problem before it is a content problem,
       // so ops can hide review text too — it never moves the score either way.
-      'pro.review.moderate',
+      'review.moderate',
       // Ops counts the cash a Pro hands back; ops cannot refund a customer.
       'payment.cash.handover.confirm',
     ],
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
       'booking.read',
       'booking.cancel',
       'booking.force_start',
-      'pro.review.moderate',
+      'review.moderate',
       // Support answers "where is my money" and needs to see an order and its
       // attempts. It cannot send money back.
       'payment.read',

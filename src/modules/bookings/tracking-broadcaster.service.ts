@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TRACKING_CHANNEL, type ProMovedMessage } from '../../redis/channels';
 import { RedisService } from '../../redis/redis.service';
+import { BookingEtaService } from './booking-eta.service';
 import { TRACKABLE_STATUSES } from './booking-tracking.service';
 import { TrackingGateway, type TrackingFrame } from './tracking.gateway';
 
@@ -38,6 +39,7 @@ export class TrackingBroadcasterService implements OnModuleInit {
     private readonly redis: RedisService,
     private readonly prisma: PrismaService,
     private readonly gateway: TrackingGateway,
+    private readonly eta: BookingEtaService,
   ) {}
 
   onModuleInit(): void {
@@ -54,26 +56,46 @@ export class TrackingBroadcasterService implements OnModuleInit {
       // position during `started` would show a pin sitting on the customer's
       // own house for an hour, and after completion it would leak where the
       // Pro went next.
+      // The address pin comes along for the ride. One ping fans out to every
+      // booking this Pro is travelling to, and re-reading the destination per
+      // frame would be a query per booking per GPS report.
       const bookings = await this.prisma.booking.findMany({
         where: { proId: moved.proId, status: { in: [...TRACKABLE_STATUSES] } },
-        select: { id: true, status: true },
+        select: {
+          id: true,
+          status: true,
+          address: { select: { pinLat: true, pinLng: true } },
+        },
       });
+
+      const position = { lat: moved.lat, lng: moved.lng };
 
       for (const booking of bookings) {
         const frame: TrackingFrame = {
           bookingId: booking.id,
           status: booking.status,
           proId: moved.proId,
-          position: { lat: moved.lat, lng: moved.lng },
+          position,
           // Fresh by definition — this frame exists because a ping just
           // arrived. Staleness is the polled route's problem, where the
           // question "how old is this?" is the whole point.
           isStale: false,
           lastReportedAt: new Date(moved.reportedAt),
-          // Still null, still deliberate. Nothing can compute a road ETA yet,
-          // and a haversine guess published as an arrival time is worse than
-          // no number at all.
-          etaMinutes: null,
+          /**
+           * A real road ETA now, or null.
+           *
+           * Null still happens and is still deliberate: no Routes key, no
+           * route found, or the provider was unreachable. A straight-line
+           * guess is never published as an arrival time — see
+           * `BookingEtaService`.
+           *
+           * The router caches by rounded origin, so a Pro creeping through
+           * traffic reuses one answer rather than billing a call per ping.
+           */
+          etaMinutes: await this.eta.between(position, {
+            lat: booking.address.pinLat,
+            lng: booking.address.pinLng,
+          }),
         };
         this.gateway.publish(frame);
       }

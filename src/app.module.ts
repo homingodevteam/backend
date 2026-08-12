@@ -5,14 +5,19 @@ import { AppService } from './app.service';
 import { GeocodingModule } from './geocoding/geocoding.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { RoutingModule } from './routing/routing.module';
 import { BookingsModule } from './modules/bookings/bookings.module';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { CommissionModule } from './modules/commission/commission.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { IdentityModule } from './modules/identity/identity.module';
+import { LedgerModule } from './modules/ledger/ledger.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProsModule } from './modules/pros/pros.module';
+import { ReviewsModule } from './modules/reviews/reviews.module';
+import { TrainingModule } from './modules/training/training.module';
 
 // NODE_ENV picks the override file; `.env` is always the fallback beneath it.
 // ConfigModule gives the FIRST file that defines a variable precedence, so the
@@ -28,6 +33,9 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
     }),
     PrismaModule,
     GeocodingModule,
+    // Global, like geocoding, and for the same reason: dispatch, bookings and
+    // geo all need road travel time and none of them can own it.
+    RoutingModule,
     HealthModule,
     CatalogModule,
     IdentityModule,
@@ -40,6 +48,16 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
     PaymentsModule,
     GeoModule,
     DispatchModule,
+    // Last two, in this order: module 8 registers into module 4's completion
+    // delegate and module 7's reversal delegate, and module 9 registers into
+    // the ledger delegates of both 7 and 8 — so each must already exist.
+    CommissionModule,
+    LedgerModule,
+    // Module 10. Reviews is a leaf; Training registers into module 6's
+    // activation-gate delegate, so ProsModule must already be constructed —
+    // it is, several lines above.
+    ReviewsModule,
+    TrainingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

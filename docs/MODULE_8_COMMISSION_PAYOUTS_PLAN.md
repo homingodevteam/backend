@@ -1,7 +1,11 @@
 # Module 8 — Commission & Payouts · Implementation Plan
 
-**Date:** 2026-08-11
-**Status:** plan only — no module 8 code written yet.
+**Date:** 2026-08-11 · **Built:** 2026-08-12
+**Status:** ✅ **Built.** See §9 for what changed between this plan and the code.
+
+> This document is kept as written, including the parts the build corrected.
+> §9 records the five changes and why each was needed — a plan that is quietly
+> edited to match the code stops being evidence of anything.
 
 Written against [`Modules_and_Features 1.md`](Modules_and_Features%201.md) §8, the
 US-8.x stories in [`user-stories-by-persona/`](user-stories-by-persona/),
@@ -326,3 +330,90 @@ module 1's permission codes. Each is its own commit, as in module 7.
 - [ ] A suspended Pro can still read their payouts
 - [ ] The app boots and everything but disbursement works with **no RazorpayX credentials**
 - [ ] An incentive of an unevaluated type reports that clearly rather than silently never paying
+
+---
+
+## 9 · What the build changed — five corrections to this plan
+
+Four came out of a review of §4 and §5; the fifth surfaced in phase G. Each is
+recorded in [`CONFLICTS_AND_DECISIONS.md`](CONFLICTS_AND_DECISIONS.md).
+
+### 9.1 · Unique commission per booking — already true
+
+`BookingCommission.bookingId` was **already** `@unique` in the schema, so a
+double-pay was already impossible. But a unique index alone turns a duplicate
+into a _crash_, not a no-op — and the sweeper's whole job is re-running jobs it
+cannot tell apart from ones already done. So the write is an explicit read, an
+advisory lock on the booking, and a second read inside it. A repeat call now
+returns silently, which is what both the hook and the sweeper need.
+
+### 9.2 · Disbursement idempotency — made explicit
+
+One payout, at most one successful transfer, under retries:
+
+| Guard                                             | Stops                                                |
+| ------------------------------------------------- | ---------------------------------------------------- |
+| `updateMany where status = 'approved'`            | Two admins pressing send at once                     |
+| `idempotencyKey` unique here **and** at RazorpayX | A resubmitted request                                |
+| Retry only from `failed`, never `processing`      | Resending something that may already have moved      |
+| A **fresh** key per attempt                       | A retry replaying the old response instead of trying |
+
+The subtle one is the last two together. An unreachable gateway is _not_ a
+failure — the request may have arrived — so it stays `processing` with the
+reason recorded and returns `202`, and only a definite refusal becomes `failed`.
+
+### 9.3 · Incentive contributions — a new table
+
+§4's `ProIncentiveProgress.commissionId` records the job that tipped the total
+over and forgets the other forty-nine, so US-8.7's "a reversal must decrement
+the progress" had nothing to follow back. `ProIncentiveContribution` is one row
+per (progress, job); progress is their sum, re-derived from source on every
+evaluation. See #53.
+
+### 9.4 · Recurring incentives — a period dimension
+
+§4's `@@unique([proId, incentiveId])` makes every scheme once-ever, whatever was
+intended, and does it invisibly. Added `Incentive.recurrence` and a `periodKey`
+in the unique key, derived in **Asia/Kolkata** so a month boundary is the one a
+Pro in Indore experiences. See #54.
+
+### 9.5 · Payout period boundaries — labels, not filters
+
+The obvious rule — "commissions whose job completed between these dates" —
+orphans money. A job completed on the 28th, held behind a dispute and approved
+on the 3rd, is in no batch ever, and nothing reports it.
+
+`periodStart`/`periodEnd` **label** a batch. Inclusion is **every `approved`,
+unpaid commission as of `periodEnd`**, however old. Determinism comes from the
+attachment, not the dates: being in a batch sets `payoutId`, which is what stops
+a commission appearing in two.
+
+### And one the plan did not see
+
+**#51 — the bank account number never reaches this server.** `CreateBankAccountDto`
+rejects anything not already masked, so there is no verification step holding an
+unmasked number and no column for module 2 to fill. **UPI is the payout rail**,
+and a Pro without a UPI id is skipped at batch generation with
+`NO_PAYABLE_DESTINATION` rather than failing at the transfer. Enabling bank
+transfers is a module 2 decision about how a regulated field enters the system —
+see #51 for exactly what it would take.
+
+---
+
+## 10 · Definition of done — verified
+
+Every box in §8, plus the four from §9. Evidence: **679 unit tests** (127 new in
+`src/modules/commission/`), **175 e2e**, typecheck and lint clean, migration
+applied and diffed against the schema with no drift.
+
+The two that are worth reading the tests for, because they are the ones a future
+change is most likely to break quietly:
+
+- `commission-calculator.spec.ts` — "is a function of the price and the rate,
+  and nothing else". There is no duration parameter to pass, and the test says
+  so, so adding one has to break a test rather than arrive as a helpful extra
+  field.
+- `commission-reversal.service.spec.ts` — "does nothing the second time, even
+  though the status still says paid". A reversed paid row keeps `paid`, so
+  guarding on `status === 'reversed'` would let a second call charge the Pro
+  twice. It guards on `reversedAt`.

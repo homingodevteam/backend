@@ -1,15 +1,23 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { apiError } from '../../common/utils';
 import type { Area, AreaService as AreaServiceRow } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { AreaPostingDto, ProPostingDto } from './dto/area.dto';
 import {
+  GEOCODER,
+  type CityBounds,
+  type GeocoderPort,
+} from '../../geocoding/geocoding.types';
+import { pickAreaName } from './area-name';
+import {
   boxAreaSqKm,
   boxCenter,
   boxDimensionsKm,
   boxesOverlap,
+  centreIsInside,
   expandBox,
   generateGrid,
+  generateGridForBounds,
   type BoundingBox,
 } from './geo.types';
 
@@ -29,7 +37,10 @@ export interface AreaBounds extends BoundingBox {
 export class AreasService {
   private readonly logger = new Logger(AreasService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(GEOCODER) private readonly geocoder: GeocoderPort,
+  ) {}
 
   // ------------------------------------------------------------------
   // Areas
@@ -338,6 +349,295 @@ export class AreasService {
   async describeForCity(cityId: string, includeInactive = false) {
     const areas = await this.listForCity(cityId, includeInactive);
     return areas.map((area) => this.describe(area));
+  }
+
+  // ------------------------------------------------------------------
+  // Opening and reshaping a city
+  // ------------------------------------------------------------------
+
+  /**
+   * Ask the geocoder how big a city actually is.
+   *
+   * Read-only, and deliberately separate from generating anything: an admin
+   * should see "24.6 x 20.1 km, 500 cells at 1 km" and agree to it BEFORE five
+   * hundred rows exist.
+   */
+  cityBounds(name: string): Promise<CityBounds> {
+    return this.geocoder.geocodeCity(name);
+  }
+
+  /**
+   * How many cells a box would produce, without producing any.
+   *
+   * The whole reason `city-bounds` accepts a cell size: 500 rows and 36 rows
+   * are very different afternoons, and the number should be visible before
+   * the rows exist rather than after.
+   */
+  countCellsFor(box: BoundingBox, cellSizeKm: number): number {
+    return generateGridForBounds({ ...box, cellSizeKm }).length;
+  }
+
+  /**
+   * Lay a grid over a RECTANGLE rather than a square around a centre.
+   *
+   * Why this exists beside `generateGridForCity`: a square big enough to
+   * contain a city that is 25 km one way and 20 the other wastes a fifth of
+   * its cells on farmland before anybody deactivates a thing.
+   */
+  async generateGridForBox(input: {
+    cityId: string;
+    box: BoundingBox;
+    cellSizeKm: number;
+  }): Promise<Area[]> {
+    await this.assertCityExists(input.cityId);
+    assertValidBounds(input.box);
+
+    const existing = await this.prisma.area.count({
+      where: { cityId: input.cityId },
+    });
+    if (existing > 0) {
+      throw apiError(
+        `This city already has ${existing} areas. Generating a grid over them would overlap.`,
+        HttpStatus.CONFLICT,
+        [
+          {
+            field: 'cityId',
+            message:
+              'Use POST /admin/areas/regenerate to replace them, or deactivate them first',
+            code: 'CITY_ALREADY_MAPPED',
+          },
+        ],
+      );
+    }
+
+    return this.persistCells(
+      input.cityId,
+      generateGridForBounds({ ...input.box, cellSizeKm: input.cellSizeKm }),
+    );
+  }
+
+  /**
+   * Retire every cell whose centre falls outside a box.
+   *
+   * Opening a city is unusable without this. A 20 x 25 km city at 1 km cells
+   * is 500 rows, most of them farmland, and doing that one `PATCH` at a time
+   * is not a workflow anybody finishes. A half-pruned map is worse than an
+   * unpruned one, because the leftovers are invisible until somebody books
+   * from a field.
+   *
+   * **Centre, not overlap.** A cell straddling the boundary is kept. Erring
+   * inward would leave a hole at the city edge, which surfaces as "we do not
+   * serve your street" to somebody who lives in town.
+   *
+   * Deactivates, never deletes: `Booking.areaId` is `SetNull`, so deleting a
+   * cell silently erases where past work was sold.
+   */
+  async deactivateOutside(input: {
+    cityId: string;
+    box: BoundingBox;
+    dryRun?: boolean;
+  }): Promise<{
+    considered: number;
+    deactivated: number;
+    kept: number;
+    dryRun: boolean;
+    names: string[];
+  }> {
+    await this.assertCityExists(input.cityId);
+    assertValidBounds(input.box);
+
+    const areas = await this.prisma.area.findMany({
+      where: { cityId: input.cityId, isActive: true },
+    });
+
+    const outside = areas.filter((area) => !centreIsInside(area, input.box));
+    const dryRun = input.dryRun ?? false;
+
+    if (!dryRun && outside.length > 0) {
+      await this.prisma.area.updateMany({
+        where: { id: { in: outside.map((area) => area.id) } },
+        data: { isActive: false },
+      });
+      this.logger.warn(
+        `Deactivated ${outside.length} of ${areas.length} areas in city ${input.cityId} ` +
+          'as outside the supplied bounds. Bookings already taken keep their area.',
+      );
+    }
+
+    return {
+      considered: areas.length,
+      deactivated: dryRun ? 0 : outside.length,
+      kept: areas.length - outside.length,
+      dryRun,
+      // Bounded: this is for eyeballing the selection, not for paging it.
+      names: outside.slice(0, 200).map((area) => area.name),
+    };
+  }
+
+  /**
+   * Replace a city's map — the supported way to change cell size.
+   *
+   * Without it, `generate-grid` refuses on an already-mapped city and there is
+   * no way back: "I generated at 6 km and actually want 1 km" is a dead end
+   * that finishes with somebody editing rows by hand.
+   *
+   * Old cells are handled by whether anything depends on them:
+   *
+   * - **Never booked** — deleted. `AreaService` and `ProArea` cascade, so
+   *   nothing is orphaned, and leaving hundreds of dead rows would collide
+   *   with the new grid on `@@unique([cityId, name])`.
+   * - **Booked at least once** — kept, deactivated, and renamed with a
+   *   `(retired ...)` suffix. The booking keeps pointing at a row that still
+   *   says where the work was sold, and the old name is freed for the new grid.
+   */
+  async regenerate(input: {
+    cityId: string;
+    box: BoundingBox;
+    cellSizeKm: number;
+  }): Promise<{ retired: number; deleted: number; created: Area[] }> {
+    await this.assertCityExists(input.cityId);
+    assertValidBounds(input.box);
+
+    const existing = await this.prisma.area.findMany({
+      where: { cityId: input.cityId },
+      include: { _count: { select: { bookings: true } } },
+    });
+
+    const disposable = existing.filter((area) => area._count.bookings === 0);
+    const historic = existing.filter((area) => area._count.bookings > 0);
+    const stamp = new Date().toISOString().slice(0, 10);
+
+    const cells = generateGridForBounds({
+      ...input.box,
+      cellSizeKm: input.cellSizeKm,
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      // Renamed before anything is created, so the new grid's A1 cannot
+      // collide with an old A1 being kept for its bookings.
+      for (const area of historic) {
+        await tx.area.update({
+          where: { id: area.id },
+          data: { isActive: false, name: `${area.name} (retired ${stamp})` },
+        });
+      }
+
+      if (disposable.length > 0) {
+        await tx.area.deleteMany({
+          where: { id: { in: disposable.map((area) => area.id) } },
+        });
+      }
+    });
+
+    this.logger.warn(
+      `Regenerating city ${input.cityId}: deleted ${disposable.length} unused areas, ` +
+        `retired ${historic.length} with booking history, creating ${cells.length} new cells.`,
+    );
+
+    return {
+      retired: historic.length,
+      deleted: disposable.length,
+      created: await this.persistCells(input.cityId, cells),
+    };
+  }
+
+  /**
+   * What a grid WOULD look like — computed, named, and not saved.
+   *
+   * The step that was missing. Opening a city was a one-way door: pick a cell
+   * size, create five hundred rows, and only then discover the cells are too
+   * coarse to be useful. Undoing that meant `regenerate`, which retires rows
+   * and leaves debris.
+   *
+   * This returns the same cells `generate-grid-for-box` would create, with the
+   * names the naming pass would suggest, and writes nothing. Adjust the size,
+   * look again, and commit when it reads right.
+   *
+   * **Naming is capped and sampled**, because a preview must answer in one
+   * request. A 525-cell grid is 525 geocoder calls — seconds on Google, nine
+   * minutes on Nominatim — so `nameLimit` cells get real names and the rest
+   * keep their grid reference. Enough to judge whether the size is right,
+   * which is the only question a preview has to answer.
+   */
+  async previewGrid(input: {
+    box: BoundingBox;
+    cellSizeKm: number;
+    nameLimit?: number;
+  }): Promise<{
+    cellCount: number;
+    named: number;
+    cells: {
+      gridRef: string;
+      suggestedName: string | null;
+      minLat: number;
+      maxLat: number;
+      minLng: number;
+      maxLng: number;
+    }[];
+  }> {
+    assertValidBounds(input.box);
+
+    const cells = generateGridForBounds({
+      ...input.box,
+      cellSizeKm: input.cellSizeKm,
+    });
+
+    // Zero is meaningful: "just show me the geometry, do not spend anything".
+    const limit = Math.max(0, Math.min(input.nameLimit ?? 25, 100));
+    let named = 0;
+
+    const described = await Promise.all(
+      cells.map(async (cell, index) => {
+        const base = {
+          gridRef: cell.name,
+          minLat: cell.minLat,
+          maxLat: cell.maxLat,
+          minLng: cell.minLng,
+          maxLng: cell.maxLng,
+        };
+        if (index >= limit) return { ...base, suggestedName: null };
+
+        try {
+          const centre = boxCenter(cell);
+          const geocoded = await this.geocoder.reverseGeocode(
+            centre.lat,
+            centre.lng,
+          );
+          const suggestedName = pickAreaName(geocoded);
+          if (suggestedName) named += 1;
+          return { ...base, suggestedName };
+        } catch {
+          // A preview that half-fails is still a useful preview. The real
+          // naming pass retries every unnamed cell after the grid is saved.
+          return { ...base, suggestedName: null };
+        }
+      }),
+    );
+
+    return { cellCount: cells.length, named, cells: described };
+  }
+
+  /** The one place generated cells become rows. */
+  private persistCells(
+    cityId: string,
+    cells: ReturnType<typeof generateGridForBounds>,
+  ): Promise<Area[]> {
+    return this.prisma.$transaction(
+      cells.map((cell) =>
+        this.prisma.area.create({
+          data: {
+            cityId,
+            name: cell.name,
+            gridRef: cell.name,
+            nameSource: 'generated',
+            minLat: cell.minLat,
+            maxLat: cell.maxLat,
+            minLng: cell.minLng,
+            maxLng: cell.maxLng,
+          },
+        }),
+      ),
+    );
   }
 
   private async assertCityExists(cityId: string): Promise<void> {
@@ -858,7 +1158,7 @@ export class AreasService {
  * separately because it is syntactically fine, satisfies `min <= max`, and
  * silently matches nothing forever.
  */
-function assertValidBounds(bounds: AreaBounds): void {
+function assertValidBounds(bounds: BoundingBox & { name?: string }): void {
   const problems: Array<{ field: string; message: string; code: string }> = [];
 
   if (!(bounds.maxLat > bounds.minLat)) {
@@ -878,7 +1178,7 @@ function assertValidBounds(bounds: AreaBounds): void {
 
   if (problems.length > 0) {
     throw apiError(
-      `The bounds for ${bounds.name} are not a rectangle`,
+      `The bounds for ${bounds.name ?? 'this area'} are not a rectangle`,
       HttpStatus.BAD_REQUEST,
       problems,
     );

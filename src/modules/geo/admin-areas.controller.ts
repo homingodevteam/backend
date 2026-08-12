@@ -28,9 +28,18 @@ import {
   AreaPostingDto,
   BulkCreateAreasDto,
   CopyAreaServicesDto,
+  CityBoundsDto,
+  CityBoundsQueryDto,
   CreateAreaDto,
+  DeactivateOutsideDto,
+  DeactivateOutsideResultDto,
   GenerateGridDto,
+  GenerateGridForBoxDto,
+  PreviewGridDto,
+  PreviewGridResultDto,
   ProPostingDto,
+  RegenerateGridDto,
+  RegenerateResultDto,
   SetAreaServiceDto,
   SetAreaServicesDto,
   SetProAreaDto,
@@ -105,6 +114,194 @@ export class AdminAreasController {
   async generateGrid(@Body() dto: GenerateGridDto): Promise<AreaDto[]> {
     const cells = await this.areas.generateGridForCity(dto);
     return cells.map((cell) => this.areas.describe(cell));
+  }
+
+  @Get('city-bounds')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({
+    summary: 'How big is this city, actually?',
+    description:
+      'Asks the geocoder for a named place and returns the rectangle it ' +
+      'occupies. Read-only — nothing is created.\n\n' +
+      'Run this **before** generating anything. Google puts Indore at about ' +
+      '24.6 x 20.1 km, which at 1 km cells is roughly 500 rows; guessing a ' +
+      '30 km square instead covers half again as much farmland. Pass ' +
+      '`cellSizeKm` to be told the count up front.\n\n' +
+      'A rectangle, not a radius, because cities are not square — and the ' +
+      'difference is a fifth of the cells for a city like Indore.',
+  })
+  @ApiOkEnvelope(CityBoundsDto)
+  @ApiErrorEnvelope(
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.UNPROCESSABLE_ENTITY,
+    HttpStatus.SERVICE_UNAVAILABLE,
+  )
+  async cityBounds(@Query() query: CityBoundsQueryDto): Promise<CityBoundsDto> {
+    const bounds = await this.areas.cityBounds(query.name);
+    return {
+      ...bounds,
+      cellCount: query.cellSizeKm
+        ? this.areas.countCellsFor(bounds, query.cellSizeKm)
+        : null,
+    };
+  }
+
+  @Post('preview-grid')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({
+    summary: 'See a grid before creating it',
+    description:
+      'Returns exactly the cells `generate-grid-for-box` would create, with ' +
+      'the names the naming pass would suggest — and **writes nothing**.\n\n' +
+      'Opening a city used to be a one-way door: pick a size, create five ' +
+      'hundred rows, then discover they are too coarse. Try 2 km, look, try ' +
+      '1 km, look, and commit when it reads right.\n\n' +
+      'Naming is **sampled**: `nameLimit` cells (default 25, max 100) get real ' +
+      'names and the rest return their grid reference. A 525-cell grid is 525 ' +
+      'geocoder calls, which is not a request that can be held open — and the ' +
+      'sample is enough to judge whether the size is right, which is the only ' +
+      'question a preview has to answer. Pass `0` to spend nothing.',
+  })
+  @ApiOkEnvelope(PreviewGridResultDto)
+  @ApiErrorEnvelope(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+  )
+  previewGrid(@Body() dto: PreviewGridDto): Promise<PreviewGridResultDto> {
+    return this.areas.previewGrid({
+      cellSizeKm: dto.cellSizeKm,
+      nameLimit: dto.nameLimit,
+      box: {
+        minLat: dto.minLat,
+        maxLat: dto.maxLat,
+        minLng: dto.minLng,
+        maxLng: dto.maxLng,
+      },
+    });
+  }
+
+  @Post('generate-grid-for-box')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({
+    summary: 'Lay a grid over a rectangle',
+    description:
+      'The same gapless tiling as `generate-grid`, from a box instead of a ' +
+      'centre and a half-width. Pair it with `GET /admin/areas/city-bounds` ' +
+      'and the box is the city rather than a square guessed around it.\n\n' +
+      'Cells arrive named by grid position (`A1`, `B3`). Then: ' +
+      '`POST /admin/areas/deactivate-outside` to drop the farmland, ' +
+      '`POST /admin/areas/suggest-names` to name what is left, and only then ' +
+      'the booking gate.\n\n' +
+      'Refuses to run on a city that already has areas — use `regenerate`.',
+  })
+  @ApiCreatedEnvelope(AreaDto, { isArray: true })
+  @ApiErrorEnvelope(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.NOT_FOUND,
+    HttpStatus.CONFLICT,
+  )
+  async generateGridForBox(
+    @Body() dto: GenerateGridForBoxDto,
+  ): Promise<AreaDto[]> {
+    const cells = await this.areas.generateGridForBox({
+      cityId: dto.cityId,
+      cellSizeKm: dto.cellSizeKm,
+      box: {
+        minLat: dto.minLat,
+        maxLat: dto.maxLat,
+        minLng: dto.minLng,
+        maxLng: dto.maxLng,
+      },
+    });
+    return cells.map((cell) => this.areas.describe(cell));
+  }
+
+  @Post('deactivate-outside')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({
+    summary: 'Drop every cell outside a boundary, in one call',
+    description:
+      'The bulk half of opening a city. A 20 x 25 km city at 1 km cells is ' +
+      '~500 rows and most of them are farmland — deactivating those one ' +
+      '`PATCH` at a time is not a workflow anybody finishes, and a ' +
+      'half-pruned map is worse than an unpruned one because the leftovers ' +
+      'are invisible until somebody books from a field.\n\n' +
+      '**Run it with `dryRun: true` first.** It returns what it would touch ' +
+      'and changes nothing.\n\n' +
+      'A cell is judged by its **centre**. One straddling the boundary is ' +
+      'kept — erring inward would leave a hole at the city edge, which ' +
+      'surfaces as "we do not serve your street" to somebody who lives in ' +
+      'town.\n\n' +
+      'Deactivates, never deletes: a booking may point at the cell, and it is ' +
+      'the record of where that work was sold.',
+  })
+  @ApiOkEnvelope(DeactivateOutsideResultDto)
+  @ApiErrorEnvelope(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.NOT_FOUND,
+  )
+  async deactivateOutside(
+    @Body() dto: DeactivateOutsideDto,
+  ): Promise<DeactivateOutsideResultDto> {
+    return this.areas.deactivateOutside({
+      cityId: dto.cityId,
+      dryRun: dto.dryRun,
+      box: {
+        minLat: dto.minLat,
+        maxLat: dto.maxLat,
+        minLng: dto.minLng,
+        maxLng: dto.maxLng,
+      },
+    });
+  }
+
+  @Post('regenerate')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({
+    summary: 'Replace a city map — the supported way to change cell size',
+    description:
+      'Without this, `generate-grid` refuses on an already-mapped city and ' +
+      'there is no way back: "I generated at 6 km and actually want 1 km" ' +
+      'ends with somebody editing rows by hand.\n\n' +
+      'Old cells are handled by whether anything depends on them. **Never ' +
+      'booked** — deleted, freeing their names. **Booked at least once** — ' +
+      'deactivated and renamed with a `(retired ...)` suffix, so the booking ' +
+      'still points at a row that says where the work was sold.\n\n' +
+      'Destructive and not reversible. Take the `dryRun` on ' +
+      '`deactivate-outside` as the model: check `GET /admin/areas` first and ' +
+      'know what you are replacing.',
+  })
+  @ApiCreatedEnvelope(RegenerateResultDto)
+  @ApiErrorEnvelope(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.NOT_FOUND,
+  )
+  async regenerate(
+    @Body() dto: RegenerateGridDto,
+  ): Promise<RegenerateResultDto> {
+    const result = await this.areas.regenerate({
+      cityId: dto.cityId,
+      cellSizeKm: dto.cellSizeKm,
+      box: {
+        minLat: dto.minLat,
+        maxLat: dto.maxLat,
+        minLng: dto.minLng,
+        maxLng: dto.maxLng,
+      },
+    });
+    return {
+      retired: result.retired,
+      deleted: result.deleted,
+      created: result.created.map((cell) => this.areas.describe(cell)),
+    };
   }
 
   @Get('service-matrix')

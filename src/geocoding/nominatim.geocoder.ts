@@ -5,7 +5,18 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RedisService } from '../redis/redis.service';
-import type { GeocoderPort, ReverseGeocodeResult } from './geocoding.types';
+import type {
+  CityBounds,
+  GeocoderPort,
+  ReverseGeocodeResult,
+} from './geocoding.types';
+import { boundsSizeKm } from './geocoding.types';
+
+interface NominatimSearchResult {
+  display_name?: string;
+  /** [minLat, maxLat, minLng, maxLng], as strings. */
+  boundingbox?: string[];
+}
 
 interface NominatimResponse {
   display_name?: string;
@@ -37,6 +48,111 @@ export class NominatimGeocoder implements GeocoderPort {
     private readonly config: ConfigService,
     private readonly redis: RedisService,
   ) {}
+
+  /**
+   * A city name to its box, from OpenStreetMap's `/search`.
+   *
+   * Nominatim returns `boundingbox` as **strings in [minLat, maxLat, minLng,
+   * maxLng] order** — not the `[southwest, northeast]` pair Google uses. Getting
+   * that order wrong produces a box that is silently transposed rather than
+   * obviously broken, which is why it is parsed explicitly here.
+   *
+   * Subject to the same one-request-per-second courtesy limit as the reverse
+   * direction, and the same shared Redis slot enforces it.
+   */
+  async geocodeCity(name: string): Promise<CityBounds> {
+    const cacheKey = `geo:city:nominatim:${name.trim().toLowerCase()}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as CityBounds;
+
+    const userAgent = this.config.get<string>('NOMINATIM_USER_AGENT')?.trim();
+    if (!userAgent) {
+      throw new ServiceUnavailableException('Geocoding is not configured');
+    }
+
+    const acquired = await this.redis.setIfAbsent(
+      'geo:nominatim:request-slot',
+      '1',
+      1,
+    );
+    if (!acquired) {
+      throw new ServiceUnavailableException('Geocoder is busy; retry shortly');
+    }
+
+    const baseUrl = this.config.get<string>(
+      'NOMINATIM_BASE_URL',
+      'https://nominatim.openstreetmap.org',
+    );
+    const url = new URL('/search', baseUrl);
+    url.searchParams.set('format', 'jsonv2');
+    url.searchParams.set('q', name);
+    url.searchParams.set('limit', '1');
+
+    let body: NominatimSearchResult[];
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': userAgent,
+          'Accept-Language': this.config.get<string>(
+            'NOMINATIM_ACCEPT_LANGUAGE',
+            'en',
+          ),
+        },
+        signal: AbortSignal.timeout(
+          this.numberConfig('NOMINATIM_TIMEOUT_MS', 4000),
+        ),
+      });
+      if (!response.ok) {
+        throw new ServiceUnavailableException(
+          `Geocoder returned HTTP ${response.status}`,
+        );
+      }
+      body = (await response.json()) as NominatimSearchResult[];
+    } catch (error) {
+      if (
+        error instanceof ServiceUnavailableException ||
+        error instanceof UnprocessableEntityException
+      ) {
+        throw error;
+      }
+      throw new ServiceUnavailableException('Geocoder is unreachable');
+    }
+
+    const first = body?.[0];
+    const box = first?.boundingbox;
+    if (!first || !box || box.length !== 4) {
+      throw new UnprocessableEntityException(
+        `No place with an extent could be found for "${name}"`,
+      );
+    }
+
+    // [minLat, maxLat, minLng, maxLng], as strings.
+    const [minLat, maxLat, minLng, maxLng] = box.map(Number);
+    if ([minLat, maxLat, minLng, maxLng].some((n) => !Number.isFinite(n))) {
+      throw new UnprocessableEntityException(
+        `"${name}" returned a bounding box that could not be read`,
+      );
+    }
+
+    const result: CityBounds = {
+      matchedName: first.display_name ?? name,
+      minLat,
+      maxLat,
+      minLng,
+      maxLng,
+      ...boundsSizeKm({ minLat, maxLat, minLng, maxLng }),
+      provider: 'nominatim',
+      attribution:
+        'Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright',
+    };
+
+    await this.redis.set(
+      cacheKey,
+      JSON.stringify(result),
+      this.numberConfig('NOMINATIM_CACHE_TTL_SECONDS', 2_592_000),
+    );
+    return result;
+  }
 
   async reverseGeocode(
     lat: number,
@@ -117,6 +233,20 @@ export class NominatimGeocoder implements GeocoderPort {
               address.municipality,
               address.village,
               address.county,
+            ].filter((value): value is string => !!value),
+          ),
+        ],
+        // OpenStreetMap's neighbourhood layer, coarsest-last. `suburb` is the
+        // usual answer in an Indian city; `residential` catches named colonies
+        // that were never tagged as a suburb.
+        localityCandidates: [
+          ...new Set(
+            [
+              address.suburb,
+              address.neighbourhood,
+              address.quarter,
+              address.city_district,
+              address.residential,
             ].filter((value): value is string => !!value),
           ),
         ],

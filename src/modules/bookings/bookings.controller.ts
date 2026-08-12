@@ -1,6 +1,5 @@
 import {
   Body,
-  ConflictException,
   Controller,
   Get,
   Headers,
@@ -43,8 +42,6 @@ import {
   UpdateRecurringPlanDto,
 } from './dto/recurring-plan.dto';
 import { RecurringPlansService } from './recurring-plans.service';
-import { ReviewSubmittedDto, SubmitReviewDto } from './dto/submit-review.dto';
-import { ProCountersService } from '../pros/pro-counters.service';
 
 @ApiTags('Bookings')
 @ApiBearerAuth('access-token')
@@ -59,7 +56,6 @@ export class BookingsController {
     private readonly lifecycle: BookingLifecycleService,
     private readonly plans: RecurringPlansService,
     private readonly tracking_: BookingTrackingService,
-    private readonly counters: ProCountersService,
   ) {}
 
   @Post()
@@ -242,7 +238,10 @@ export class BookingsController {
       'Position is read from Redis and never stored on the booking. A Pro ' +
       'whose phone has gone quiet is reported as `isStale` rather than shown ' +
       'at a frozen pin — a stuck marker reads as "they’ve parked", not "we ' +
-      'lost them". `etaMinutes` is null until Geo & Routing (module 13) exists.',
+      'lost them".\n\n' +
+      '`etaMinutes` is a traffic-aware road estimate, or **null** — which is a ' +
+      'real answer meaning "no number worth showing", not a placeholder. ' +
+      'Render it as "on the way".',
   })
   @ApiOkEnvelope(TrackingDto)
   @ApiErrorEnvelope(
@@ -288,43 +287,5 @@ export class BookingsController {
     @Body() dto: SendMessageDto,
   ): Promise<ChatMessage> {
     return this.chat.sendAsCustomer(user.id, id, dto.body);
-  }
-
-  @Post(':id/review')
-  @ApiOperation({
-    summary: 'Rate the Pro who did this job',
-    description:
-      'One review per booking, and only once the job is completed. Re-posting ' +
-      'is a no-op rather than an error, so a retried request cannot double-count ' +
-      'a rating.',
-  })
-  @ApiCreatedEnvelope(ReviewSubmittedDto)
-  @ApiErrorEnvelope(
-    HttpStatus.BAD_REQUEST,
-    HttpStatus.UNAUTHORIZED,
-    HttpStatus.NOT_FOUND,
-    HttpStatus.CONFLICT,
-  )
-  async submitReview(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
-    @Body() dto: SubmitReviewDto,
-  ): Promise<{ submitted: true }> {
-    // Ownership is settled here rather than passed in: the Pro being rated is
-    // whoever the booking says did the work, never a client-supplied id.
-    const booking = await this.bookings.getOwnedBooking(user.id, id);
-    if (!booking.proId) {
-      throw new ConflictException('This booking was never assigned to a Pro');
-    }
-
-    await this.counters.recordReview({
-      bookingId: booking.id,
-      customerId: user.id,
-      proId: booking.proId,
-      rating: dto.rating,
-      comment: dto.comment,
-      tags: dto.tags,
-    });
-    return { submitted: true };
   }
 }

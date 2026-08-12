@@ -6,12 +6,22 @@ import {
 } from '@nestjs/common';
 import type { GoogleMapsOptions } from '../config/google-maps.config';
 import { RedisService } from '../redis/redis.service';
-import type { GeocoderPort, ReverseGeocodeResult } from './geocoding.types';
+import type {
+  CityBounds,
+  GeocoderPort,
+  ReverseGeocodeResult,
+} from './geocoding.types';
+import { boundsSizeKm } from './geocoding.types';
 
 interface GoogleAddressComponent {
   long_name: string;
   short_name: string;
   types: string[];
+}
+
+interface GoogleLatLng {
+  lat: number;
+  lng: number;
 }
 
 interface GoogleGeocodeResponse {
@@ -20,6 +30,12 @@ interface GoogleGeocodeResponse {
   results?: Array<{
     formatted_address?: string;
     address_components?: GoogleAddressComponent[];
+    types?: string[];
+    geometry?: {
+      location?: GoogleLatLng;
+      bounds?: { northeast: GoogleLatLng; southwest: GoogleLatLng };
+      viewport?: { northeast: GoogleLatLng; southwest: GoogleLatLng };
+    };
   }>;
 }
 
@@ -67,6 +83,65 @@ export class GoogleGeocoder implements GeocoderPort {
 
     const body = await this.fetchJson(url);
     const result = this.toResult(body);
+
+    await this.redis.set(
+      cacheKey,
+      JSON.stringify(result),
+      this.options.cacheTtlSeconds,
+    );
+    return result;
+  }
+
+  /**
+   * A city name to its box.
+   *
+   * `bounds` is the place's own extent; `viewport` is a display hint Google
+   * pads for a map frame. Preferring `bounds` matters — the viewport can be
+   * noticeably larger, and every extra kilometre becomes generated cells over
+   * farmland.
+   *
+   * Cached for the same thirty days as a reverse lookup. A city's outline is
+   * the least volatile thing this API returns.
+   */
+  async geocodeCity(name: string): Promise<CityBounds> {
+    const cacheKey = `geo:city:google:${name.trim().toLowerCase()}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as CityBounds;
+
+    const url = new URL('/maps/api/geocode/json', this.options.baseUrl);
+    url.searchParams.set('address', name);
+    url.searchParams.set('key', this.options.apiKey);
+    url.searchParams.set('language', this.options.language);
+    if (this.options.region)
+      url.searchParams.set('region', this.options.region);
+
+    const body = await this.fetchJson(url);
+    const first = body.results?.[0];
+    const box = first?.geometry?.bounds ?? first?.geometry?.viewport;
+
+    if (!first || !box) {
+      throw new UnprocessableEntityException(
+        `Google could not place "${name}" as somewhere with an extent. Try including the state, or draw the box by hand.`,
+      );
+    }
+
+    const size = boundsSizeKm({
+      minLat: box.southwest.lat,
+      maxLat: box.northeast.lat,
+      minLng: box.southwest.lng,
+      maxLng: box.northeast.lng,
+    });
+
+    const result: CityBounds = {
+      matchedName: first.formatted_address ?? name,
+      minLat: box.southwest.lat,
+      maxLat: box.northeast.lat,
+      minLng: box.southwest.lng,
+      maxLng: box.northeast.lng,
+      ...size,
+      provider: 'google',
+      attribution: 'Map data ©2026 Google',
+    };
 
     await this.redis.set(
       cacheKey,
@@ -134,9 +209,26 @@ export class GoogleGeocoder implements GeocoderPort {
       named('administrative_area_level_2'),
     ].filter((value): value is string => !!value);
 
+    /**
+     * The neighbourhood layer, in the order Google's own hierarchy puts it.
+     *
+     * `sublocality_level_1` is what an Indian city calls a colony or scheme
+     * and is nearly always the right answer. `neighborhood` is looser and
+     * sometimes better in newer developments. `locality` is last: naming a
+     * cell "Indore" is useless, but it beats leaving it "C3".
+     */
+    const localityCandidates = [
+      named('sublocality_level_1'),
+      named('sublocality'),
+      named('neighborhood'),
+      named('sublocality_level_2'),
+      named('locality'),
+    ].filter((value): value is string => !!value);
+
     return {
       addressLine: best.formatted_address ?? '',
       cityCandidates: [...new Set(cityCandidates)],
+      localityCandidates: [...new Set(localityCandidates)],
       stateName: named('administrative_area_level_1') ?? null,
       postalCode: named('postal_code') ?? null,
       provider: 'google',

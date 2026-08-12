@@ -7,13 +7,16 @@ import { AdminProsController } from './admin-pros.controller';
 import { KycDocumentsService } from './kyc-documents.service';
 import { ProApplicationsService } from './pro-applications.service';
 import { ProBankAccountsService } from './pro-bank-accounts.service';
-import { ProReviewsService } from './pro-reviews.service';
 import { ProServiceAssignmentsService } from './pro-service-assignments.service';
 import { ProsController } from './pros.controller';
 import { ProsService } from './pros.service';
 import { ProCountersService } from './pro-counters.service';
 import { ProStandingService } from './pro-standing.service';
 import { ProProfilePhotoService } from './pro-profile-photo.service';
+import {
+  NoOpTrainingGateService,
+  TRAINING_GATE_PORT,
+} from './ports/training-gate.port';
 
 @Module({
   // CatalogModule: a Pro can only be assigned a service that exists in the
@@ -33,13 +36,17 @@ import { ProProfilePhotoService } from './pro-profile-photo.service';
     ProsService,
     ProApplicationsService,
     ProBankAccountsService,
-    ProReviewsService,
     ProServiceAssignmentsService,
     KycDocumentsService,
     ProCountersService,
     ProStandingService,
     ProProfilePhotoService,
+    // Module 10's activation gate. Registered into by TrainingModule at boot;
+    // permissive until then, because refusing every activation when training
+    // is absent would be an outage rather than a control.
+    NoOpTrainingGateService,
+    { provide: TRAINING_GATE_PORT, useExisting: NoOpTrainingGateService },
   ],
-  exports: [ProCountersService, ProsService],
+  exports: [ProCountersService, ProsService, TRAINING_GATE_PORT],
 })
 export class ProsModule {}

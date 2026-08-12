@@ -67,25 +67,43 @@ export interface LedgerPort {
 export class NoOpLedgerService implements LedgerPort {
   private readonly logger = new Logger(NoOpLedgerService.name);
 
+  /**
+   * The real ledger, registered at boot by module 9 if it is present.
+   *
+   * The same indirection `NoOpPaymentsService` uses, for the same reason: Nest
+   * resolves providers per module, so re-binding `LEDGER_PORT` inside
+   * `LedgerModule` would never reach the services in this one.
+   */
+  private real: LedgerPort | null = null;
+
+  register(implementation: LedgerPort): void {
+    this.real = implementation;
+    this.logger.log('Ledger registered — money movements are now booked.');
+  }
+
   recordCapture(entry: CaptureEntry): Promise<void> {
+    if (this.real) return this.real.recordCapture(entry);
     return this.note(
       `charge ${entry.amount} for booking ${entry.bookingId} (payment ${entry.razorpayPaymentId})`,
     );
   }
 
   recordCashCollection(entry: CashCollectionEntry): Promise<void> {
+    if (this.real) return this.real.recordCashCollection(entry);
     return this.note(
       `cash charge ${entry.amount} for booking ${entry.bookingId}, debiting cash_in_hand:${entry.proId}`,
     );
   }
 
   recordRefund(entry: RefundEntry): Promise<void> {
+    if (this.real) return this.real.recordRefund(entry);
     return this.note(
       `refund ${entry.amount} for booking ${entry.bookingId} (refund ${entry.razorpayRefundId})`,
     );
   }
 
   recordHandover(entry: HandoverEntry): Promise<void> {
+    if (this.real) return this.real.recordHandover(entry);
     return this.note(
       `handover ${entry.amount} clearing cash_in_hand:${entry.proId} (handover ${entry.handoverId})`,
     );

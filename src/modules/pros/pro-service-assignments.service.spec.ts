@@ -13,7 +13,16 @@ function buildDeps() {
   const catalog = {
     getServiceOrFail: jest.fn(),
   };
-  return { prisma, catalog };
+  /**
+   * Module 10's activation gate, in its default shape: permissive. In a real
+   * deployment without the training module this is `NoOpTrainingGateService`,
+   * which resolves; with it, enforcement still depends on
+   * `training.gateActivation`, which ships off.
+   */
+  const trainingGate = {
+    assertEligible: jest.fn().mockResolvedValue(undefined),
+  };
+  return { prisma, catalog, trainingGate };
 }
 
 function buildService(
@@ -22,6 +31,7 @@ function buildService(
   return new ProServiceAssignmentsService(
     deps.prisma as never,
     deps.catalog as never,
+    deps.trainingGate,
   );
 }
 

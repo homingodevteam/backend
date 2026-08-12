@@ -17,12 +17,6 @@ export const PermissionCode = {
    * not see or bless them as a side effect.
    */
   PRO_BANK_VERIFY: 'pro.bankAccount.verify',
-  /**
-   * Hiding a customer's review text. Content moderation, not Pro management —
-   * and deliberately narrow: hiding never changes the star rating (see
-   * ProReviewsService), so this cannot be used to launder a Pro's score.
-   */
-  PRO_REVIEW_MODERATE: 'pro.review.moderate',
   CATALOG_MANAGE: 'catalog.manage',
   /**
    * Deliberately separate from CATALOG_MANAGE: repricing a service and
@@ -58,6 +52,72 @@ export const PermissionCode = {
    * confirms a handover must not be the person who declared it.
    */
   CASH_HANDOVER_CONFIRM: 'payment.cash.handover.confirm',
+
+  // --- Module 8 · Commission & Payouts --------------------------------
+  //
+  // Four grants where one would have done, because this is the largest
+  // outbound money movement in the system (US-8.10) and the failure modes are
+  // different at each step.
+
+  /** Reading commissions, payout batches and the finance dashboard. */
+  PAYOUT_READ: 'payout.read',
+  /**
+   * Saying a batch is correct, and generating batches in the first place.
+   * Approval **does not send money** — that is a separate grant below.
+   */
+  PAYOUT_APPROVE: 'payout.approve',
+  /**
+   * Actually moving the money to a Pro's bank. Deliberately separate from
+   * `PAYOUT_APPROVE` and ideally held by a different person: this is the one
+   * action in the API that sends funds out of the platform, and an approver
+   * who can also disburse is a one-person control over the largest payment we
+   * make.
+   */
+  PAYOUT_DISBURSE: 'payout.disburse',
+  /**
+   * Reversing a commission, raising a manual deduction, waiving one. The only
+   * way anywhere in this API to reduce what a Pro is owed, so it does not ride
+   * along with the ability to read a list.
+   */
+  PAYOUT_ADJUST: 'payout.adjust',
+  /** Configuring bonus schemes. Changes future pay, never past pay. */
+  INCENTIVE_MANAGE: 'incentive.manage',
+
+  // --- Module 9 · Ledger & Reconciliation -----------------------------
+
+  /**
+   * Reading the books, account balances and the finance dashboard. Safe:
+   * there is no route anywhere that appends, edits or deletes an entry.
+   */
+  LEDGER_READ: 'ledger.read',
+  /**
+   * Starting a reconciliation run and closing a discrepancy. Moves no money,
+   * but deciding that a variance has been explained is a judgement that should
+   * carry a name — which is why it is not folded into `ledger.read`.
+   */
+  LEDGER_AUDIT: 'ledger.audit',
+
+  // --- Module 10 · Training & Reviews ---------------------------------
+  //
+  // Two grants, where module 8 needed four. Nothing here moves money, and the
+  // worst outcome an over-granted admin can produce is a badly written
+  // training module — recoverable by editing it.
+
+  /**
+   * Training content, offline sessions, enrolment, attendance, and clearing a
+   * Pro's exhausted quiz attempts. Reading a Pro's progress rides on
+   * `pro.moderate`, which ops already holds.
+   */
+  TRAINING_MANAGE: 'training.manage',
+  /**
+   * Hiding a review, restoring one, and reading the customer feedback screen.
+   *
+   * Its own grant rather than part of `pro.moderate` because hiding decides
+   * what the public sees about a Pro whose income depends on it, and the
+   * feedback screen is the one place a household's private history is
+   * assembled in one view.
+   */
+  REVIEW_MODERATE: 'review.moderate',
 } as const;
 
 export type PermissionCode =

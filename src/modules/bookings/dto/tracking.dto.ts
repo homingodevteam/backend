@@ -36,7 +36,14 @@ export class TrackingDto {
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Always null until Geo & Routing (module 13) computes it.',
+    example: 12,
+    description:
+      'Road minutes to the door, traffic-aware.\n\n' +
+      '**Null is a real answer and must be rendered as one** — show "on the ' +
+      'way", never "0 min". It means no live position, a stale one, no route ' +
+      'found, or no routing key on this deployment. A straight-line guess is ' +
+      'never published here: the platform would rather say nothing than have ' +
+      'a customer stood at the door on a number that was never a road time.',
   })
   etaMinutes: number | null;
 }

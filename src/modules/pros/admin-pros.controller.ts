@@ -21,7 +21,6 @@ import type {
   ProApplication,
   ProBankAccount,
   ProService,
-  Review,
 } from '../../prisma/client';
 import { PermissionCode } from '../identity/constants/permission-code';
 import { RequirePermissions } from '../identity/decorators/require-permissions.decorator';
@@ -38,7 +37,6 @@ import { ProApplicationDto } from './dto/pro-application.dto';
 import { ProBankAccountDto } from './dto/pro-bank-account.dto';
 import { ProServiceDto } from './dto/pro-service.dto';
 import { ProDto } from './dto/pro.dto';
-import { ReviewDto, SetReviewVisibilityDto } from './dto/review.dto';
 import { SetAvailabilityDto } from './dto/set-availability.dto';
 import { SetBankVerificationDto } from './dto/set-bank-verification.dto';
 import { SuspendProDto } from './dto/suspend-pro.dto';
@@ -46,7 +44,6 @@ import { UpdateProServiceDto } from './dto/update-pro-service.dto';
 import { VerifyDocumentDto } from './dto/verify-document.dto';
 import { KycDocumentsService } from './kyc-documents.service';
 import { ProBankAccountsService } from './pro-bank-accounts.service';
-import { ProReviewsService } from './pro-reviews.service';
 import {
   ProApplicationsService,
   type ProApplicationWithApplicant,
@@ -65,7 +62,6 @@ export class AdminProsController {
     private readonly serviceAssignmentsService: ProServiceAssignmentsService,
     private readonly kycDocumentsService: KycDocumentsService,
     private readonly bankAccountsService: ProBankAccountsService,
-    private readonly reviewsService: ProReviewsService,
   ) {}
 
   // ----- Onboarding queue -----
@@ -323,37 +319,5 @@ export class AdminProsController {
       accountId,
       dto.isVerified,
     );
-  }
-
-  // ----- Reviews -----
-
-  @Get('pros/:id/reviews')
-  @CityScopedResource('pro')
-  @RequirePermissions(PermissionCode.PRO_REVIEW_MODERATE)
-  @ApiOperation({ summary: "Reviews left on a Pro's completed jobs" })
-  @ApiOkEnvelope(ReviewDto, { isArray: true })
-  @ApiErrorEnvelope(HttpStatus.FORBIDDEN, HttpStatus.NOT_FOUND)
-  listReviews(@Param('id') proId: string): Promise<Review[]> {
-    return this.reviewsService.listForPro(proId);
-  }
-
-  @Patch('pros/:id/reviews/:reviewId/visibility')
-  @CityScopedResource('pro')
-  @RequirePermissions(PermissionCode.PRO_REVIEW_MODERATE)
-  @ApiOperation({
-    summary: "Hide or restore a review's text — never its star rating",
-  })
-  @ApiOkEnvelope(ReviewDto)
-  @ApiErrorEnvelope(
-    HttpStatus.FORBIDDEN,
-    HttpStatus.BAD_REQUEST,
-    HttpStatus.NOT_FOUND,
-  )
-  setReviewVisibility(
-    @Param('id') proId: string,
-    @Param('reviewId') reviewId: string,
-    @Body() dto: SetReviewVisibilityDto,
-  ): Promise<Review> {
-    return this.reviewsService.setVisibility(proId, reviewId, dto);
   }
 }

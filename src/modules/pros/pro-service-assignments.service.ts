@@ -1,16 +1,27 @@
-import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  HttpStatus,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import type { ProService } from '../../prisma/client';
 import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ServiceCatalogService } from '../catalog/service-catalog.service';
 import { AssignServiceDto } from './dto/assign-service.dto';
 import { UpdateProServiceDto } from './dto/update-pro-service.dto';
+import {
+  TRAINING_GATE_PORT,
+  type TrainingGatePort,
+} from './ports/training-gate.port';
 
 @Injectable()
 export class ProServiceAssignmentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly catalog: ServiceCatalogService,
+    @Inject(TRAINING_GATE_PORT)
+    private readonly trainingGate: TrainingGatePort,
   ) {}
 
   list(proId: string): Promise<ProService[]> {
@@ -38,6 +49,13 @@ export class ProServiceAssignmentsService {
       );
     }
 
+    // Feature 6 of module 10. The row is created already active, so this IS
+    // the activation — there is no later step to check. No-op unless module 10
+    // is present and `training.gateActivation` is on, which it is not by
+    // default: a gate switched on before the content exists blocks every
+    // onboarding on the platform.
+    await this.trainingGate.assertEligible(proId, dto.serviceId);
+
     return this.prisma.proService.create({
       data: {
         proId,
@@ -58,6 +76,13 @@ export class ProServiceAssignmentsService {
     });
     if (!proService)
       throw new NotFoundException('Pro is not assigned to this service');
+
+    // Only on the transition INTO active. Re-saving an already-active row, or
+    // deactivating one, must never be blocked by training — suspending a Pro
+    // from a service is a safety action and cannot depend on their coursework.
+    if (dto.isActive === true && !proService.isActive) {
+      await this.trainingGate.assertEligible(proId, serviceId);
+    }
 
     return this.prisma.proService.update({
       where: { proId_serviceId: { proId, serviceId } },

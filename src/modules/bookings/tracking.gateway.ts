@@ -20,6 +20,7 @@ export interface TrackingFrame {
   /** True when the Pro's phone has stopped reporting. */
   isStale: boolean;
   lastReportedAt: Date | null;
+  /** Road minutes, or null. Null means "no number worth showing". */
   etaMinutes: number | null;
 }
 

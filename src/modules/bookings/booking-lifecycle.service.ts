@@ -15,6 +15,7 @@ import type { TransitionCoordinates } from './booking.types';
 import { BookingsService } from './bookings.service';
 import { AttachPhotoDto, RequestPhotoUploadDto } from './dto/lifecycle.dto';
 import { PlatformSettingsService } from './platform-settings.service';
+import { COMMISSION_PORT, type CommissionPort } from './ports/commission.port';
 
 /**
  * Everything that happens between assignment and completion.
@@ -39,6 +40,7 @@ export class BookingLifecycleService {
     private readonly settings: PlatformSettingsService,
     private readonly config: ConfigService,
     @Inject(OTP_PROVIDER) private readonly otp: OtpProvider,
+    @Inject(COMMISSION_PORT) private readonly commission: CommissionPort,
   ) {}
 
   // ------------------------------------------------------------------
@@ -414,6 +416,22 @@ export class BookingLifecycleService {
     } catch (error) {
       this.logger.error(
         `Booking ${bookingId} completed, but the Pro completion counter did not increment. The nightly rebuild will correct it.`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+
+    // Module 8. Non-fatal for the same reason as the counter above — a Pro
+    // standing in a customer's kitchen must never see "finish job" fail — but
+    // the reasoning only transfers so far. A missing counter is derived data
+    // the nightly rebuild recomputes; a missing commission row is **money the
+    // Pro has not been credited**. So module 8 backs this call with a sweeper
+    // that finds completed jobs with no pay row and writes them. Logging alone
+    // here would mean the Pro silently loses the job's pay.
+    try {
+      await this.commission.recordCompletion(bookingId, proId);
+    } catch (error) {
+      this.logger.error(
+        `Booking ${bookingId} completed, but no commission was recorded for Pro ${proId}. The commission sweeper will retry.`,
         error instanceof Error ? error.stack : String(error),
       );
     }

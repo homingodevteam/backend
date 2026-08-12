@@ -26,11 +26,18 @@ function buildDeps() {
     areaService: { upsert: jest.fn(), findMany: jest.fn() },
     proArea: { upsert: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
   };
-  return { prisma };
+  // Only the city-opening paths reach the geocoder; everything else here
+  // never touches it.
+  const geocoder = {
+    minIntervalMs: 0,
+    reverseGeocode: jest.fn(),
+    geocodeCity: jest.fn(),
+  };
+  return { prisma, geocoder };
 }
 
 function build(deps: ReturnType<typeof buildDeps>): AreasService {
-  return new AreasService(deps.prisma as never);
+  return new AreasService(deps.prisma as never, deps.geocoder);
 }
 
 /** A ~6 km cell over Vijay Nagar. */

@@ -66,6 +66,9 @@ describe('GoogleGeocoder', () => {
     expect(result).toEqual({
       addressLine: '12 MG Road, Vijay Nagar, Indore, MP 452010, India',
       cityCandidates: ['Indore'],
+      // Structured, from `address_components` — not the first slice of the
+      // address line, which for Google is a building. See area-name.ts.
+      localityCandidates: ['Vijay Nagar', 'Indore'],
       stateName: 'Madhya Pradesh',
       postalCode: '452010',
       provider: 'google',

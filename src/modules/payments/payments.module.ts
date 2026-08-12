@@ -19,6 +19,10 @@ import { OrdersService } from './orders.service';
 import { PaymentWebhookService } from './payment-webhook.service';
 import { PaymentsController } from './payments.controller';
 import { PaymentsWebhookController } from './payments-webhook.controller';
+import {
+  COMMISSION_REVERSAL_PORT,
+  NoOpCommissionReversalService,
+} from './ports/commission-reversal.port';
 import { LEDGER_PORT, NoOpLedgerService } from './ports/ledger.port';
 import { NoOpSupportService, SUPPORT_PORT } from './ports/support.port';
 import { ProPaymentsController } from './pro-payments.controller';
@@ -45,6 +49,9 @@ import { RefundsService } from './refunds.service';
  * - {@link LEDGER_PORT} → module 9. Double-entry rows, including the
  *   `cash_in_hand:<proId>` account.
  * - {@link SUPPORT_PORT} → module 11. The billing ticket for an unpaid job.
+ * - {@link COMMISSION_REVERSAL_PORT} → module 8. A fully refunded job has to
+ *   unwind the Pro's pay. Named for the reversal rather than for commission so
+ *   it cannot be confused with module 4's `COMMISSION_PORT` at an inject site.
  *
  * Both no-ops fail **quietly**, unlike module 4's payments stub. That stub was
  * right to throw — a booking with a phantom order is unrecoverable. Here the
@@ -90,10 +97,23 @@ import { RefundsService } from './refunds.service';
     RealPaymentsAdapter,
     { provide: LEDGER_PORT, useClass: NoOpLedgerService },
     { provide: SUPPORT_PORT, useClass: NoOpSupportService },
+    {
+      provide: COMMISSION_REVERSAL_PORT,
+      useClass: NoOpCommissionReversalService,
+    },
   ],
   // Module 5 reads the ceiling to keep cash work away from a Pro who is over
-  // it. That is the one thing another module needs from here.
-  exports: [CashEligibilityService],
+  // it. Module 8 registers its reverser into the delegate below, so the symbol
+  // has to leave this module too.
+  // Module 8 registers its reverser into COMMISSION_REVERSAL_PORT; module 9
+  // registers the real ledger into LEDGER_PORT and reuses the reconciliation
+  // engine rather than writing a second one.
+  exports: [
+    CashEligibilityService,
+    ReconciliationService,
+    COMMISSION_REVERSAL_PORT,
+    LEDGER_PORT,
+  ],
 })
 export class PaymentsModule {
   private readonly logger = new Logger(PaymentsModule.name);

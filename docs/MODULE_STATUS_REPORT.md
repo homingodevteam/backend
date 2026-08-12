@@ -16,23 +16,23 @@
 
 ## Status at a glance
 
-| #   | Module                    | Owns                                            | Status                                                                       |
-| --- | ------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
-| 1   | Identity & Access         | Role, AdminUser                                 | ✅ **Built** — 10/10 features                                                |
-| 2   | Customer Profile          | Customer, CustomerAddress                       | ✅ **Built** — 8/9 features; 1 out of scope per ERD                          |
-| 3   | Service Catalog           | ServiceCategory, Service, City                  | ✅ **Built** — 8/8; per-area availability now exists via module 13 (#42)     |
-| 4   | Booking & Job Lifecycle   | Booking, RecurringPlan, BookingStatusEvent, …   | ✅ **Built** — 19/22 features; 3 blocked on modules 5/10/13                  |
-| 5   | Dispatch Engine           | AssignmentCandidate                             | ✅ **Built** — 14/16 features (this row was stale; §5 below already said so) |
-| 6   | Pro Management            | Pro, ProApplication, ProService, ProBankAccount | ✅ **Built** — 19/19 features                                                |
-| 7   | Payments                  | Order, CashHandover                             | ✅ **Built** — 17/18 features; handover cadence unresolved by design         |
-| 8   | Commission & Payouts      | BookingCommission, CommissionPayout, …          | ⬜ Not started (source models stubbed)                                       |
-| 9   | Ledger & Reconciliation   | LedgerEntry, …                                  | ⬜ Not started                                                               |
-| 10  | Training & Reviews        | TrainingModule, Review, …                       | ⬜ Not started (Review stubbed)                                              |
-| 11  | Safety & Support          | SosAlert, SupportTicket, TicketMessage          | ⬜ Not started                                                               |
-| 12  | Notifications             | NotificationLog                                 | ⬜ Not started                                                               |
-| 13  | Geo & Routing             | Area, AreaService, ProArea                      | 🟡 **Partial** — service areas built; Google Maps, ETA and WebSockets next   |
-| 14  | Config & Server-Driven UI | PlatformSetting, UiConfig                       | 🟡 **Partial** — `PlatformSetting` model exists; no API, no UiConfig         |
-| 15  | Admin Console & Reporting | AdminJob _(audit storage deferred)_             | ⬜ Not started; `AdminAuditLog` explicitly deferred                          |
+| #   | Module                    | Owns                                              | Status                                                                       |
+| --- | ------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 1   | Identity & Access         | Role, AdminUser                                   | ✅ **Built** — 10/10 features                                                |
+| 2   | Customer Profile          | Customer, CustomerAddress                         | ✅ **Built** — 8/9 features; 1 out of scope per ERD                          |
+| 3   | Service Catalog           | ServiceCategory, Service, City                    | ✅ **Built** — 8/8; per-area availability now exists via module 13 (#42)     |
+| 4   | Booking & Job Lifecycle   | Booking, RecurringPlan, BookingStatusEvent, …     | ✅ **Built** — 19/22 features; 3 blocked on modules 5/10/13                  |
+| 5   | Dispatch Engine           | AssignmentCandidate                               | ✅ **Built** — 14/16 features (this row was stale; §5 below already said so) |
+| 6   | Pro Management            | Pro, ProApplication, ProService, ProBankAccount   | ✅ **Built** — 19/19 features                                                |
+| 7   | Payments                  | Order, CashHandover                               | ✅ **Built** — 17/18 features; handover cadence unresolved by design         |
+| 8   | Commission & Payouts      | BookingCommission, CommissionPayout, Incentive, … | ✅ **Built** — 13/13 features; 2 of 4 incentive types have evaluators (#3.6) |
+| 9   | Ledger & Reconciliation   | LedgerEntry, ReconciliationRun, …                 | ✅ **Built** — 9/9 features; variance _trend_ deferred for want of history   |
+| 10  | Training & Reviews        | TrainingModule, ProTrainingProgress, Review, …    | ✅ **Built** — 15/15 features; the activation gate ships **off** (#61)       |
+| 11  | Safety & Support          | SosAlert, SupportTicket, TicketMessage            | ⬜ Not started                                                               |
+| 12  | Notifications             | NotificationLog                                   | ⬜ Not started                                                               |
+| 13  | Geo & Routing             | Area, AreaService, ProArea                        | 🟡 **Mostly built** — areas, geocoding, ETA and WebSockets all live          |
+| 14  | Config & Server-Driven UI | PlatformSetting, UiConfig                         | 🟡 **Partial** — `PlatformSetting` model exists; no API, no UiConfig         |
+| 15  | Admin Console & Reporting | AdminJob _(audit storage deferred)_               | ⬜ Not started; `AdminAuditLog` explicitly deferred                          |
 
 "Stubbed" means the model exists in `prisma/schema.prisma` because a built module needed it as a foreign key or counter source — not that the module is partly built.
 
@@ -279,7 +279,7 @@ All 24 US-4.x stories across the three personas, checked against the shipped cod
 | **US-4.15** Not be home when they arrive        | C/P/A   | ✅ for module 4's part — arrival and failed start recorded, ops decides. Charging stays a policy call ([#24](CONFLICTS_AND_DECISIONS.md))                                            |
 | **US-4.16** Complete with photo proof           | P       | ✅ Completion refused without one                                                                                                                                                    |
 | **US-4.17** Work as long as the job takes       | P       | ✅ Duration recorded; commission unchanged ([#18](CONFLICTS_AND_DECISIONS.md))                                                                                                       |
-| **US-4.18** Rate the job                        | C       | ⏸ Module 10 owns `Review`                                                                                                                                                            |
+| **US-4.18** Rate the job                        | C       | ✅ **Built in module 10** — `POST /bookings/:bookingId/review`, within 14 days, immutable once written                                                                               |
 | **US-4.19** Cancel before anyone is assigned    | C       | ✅ Windows A/B, full refund                                                                                                                                                          |
 | **US-4.20** Cancel while the Pro is on the way  | C       | 🟡 Window D correct and the assignment is closed first — but **the Pro is not notified**, so they keep driving. Module 12                                                            |
 | **US-4.21** Stop work that's going wrong        | C/A     | ✅ Ops-only, discretionary refund, never a formula                                                                                                                                   |
@@ -330,7 +330,9 @@ Wiring a real caller to `ProCountersService` exposed a **third and fourth** inst
 
 `recordOffer` used the winner's candidate row as its idempotency guard; the engine writes that row first (it holds the score inputs), so the counter always returned early and `assignmentsOffered` stayed at zero while `assignmentsAcknowledged` climbed. Live verification caught it: `offered=0 acked=1` is not a state that can occur. After the fix, `offered=1 acked=1 acceptanceRate=1.00`.
 
-**`recordReview` is the one method that has still never run.** Module 10 will be its first caller, and it carries the same shape of risk.
+**`recordReview` is the one method that has still never run** — and now never will. Module 10 owns review writing in `src/modules/reviews`, because the rule it encodes had grown a second direction, a submission window, a photo cap and a customer counter. It is marked `@deprecated` and is module 6's to delete; a dead duplicate of a live rule is exactly the shape of [#56](CONFLICTS_AND_DECISIONS.md).
+
+The risk it carried landed anyway, one layer down. `rebuildAll` summed **every** row in `reviews` grouped by `proId`, which was right until a Pro could author one — see [#61](CONFLICTS_AND_DECISIONS.md).
 
 ### Live verification
 
@@ -428,6 +430,183 @@ module 4's payments port; `Service.allowsCash` and its own migration (#37);
 
 ---
 
+## 8 · Commission & Payouts — 13/13 built
+
+**Date built:** 2026-08-12. Plan: [`MODULE_8_COMMISSION_PAYOUTS_PLAN.md`](MODULE_8_COMMISSION_PAYOUTS_PLAN.md).
+Conflicts settled: **#45** (salary), **#51** (masked bank account), **#52**
+(who "commission" names), **#53** (incentive contributions), **#54**
+(recurring bonuses).
+
+| #   | Feature                                       | Status                                                                                                                    |
+| --- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Commission rate on the service, finance-only  | ✅ Already in module 3 — `catalog.commission.set`, and activation is gated on it                                          |
+| 2   | Percent or flat                               | ✅ Integer-paise arithmetic; the two shares provably sum to the price (CHECK constraint)                                  |
+| 3   | Computed the moment the job completes         | ✅ `COMMISSION_PORT` on module 4, beside `recordCompletion`, non-fatal                                                    |
+| 4   | Rate snapshotting                             | ✅ Type and value copied onto the row; the live `Service` is never re-read                                                |
+| 5   | Platform and Pro share both recorded          | ✅ `platformAmount` is always the remainder, never computed independently                                                 |
+| 6   | Deductions applied per job                    | ✅ `POST /admin/commissions/:id/deduction`, mirrored onto the row for display                                             |
+| 7   | Incentive schemes with criteria and reward    | 🟡 All four types configurable; **`jobs_count` and `rating` have evaluators**, the other two report `hasEvaluator: false` |
+| 8   | Progress tracked, credited against the job    | ✅ `ProIncentiveContribution` — one row per job, progress is their sum (#53)                                              |
+| 9   | Live earnings in the Pro app                  | ✅ Direct reads of rows the completion hook writes synchronously; no roll-up to fall behind                               |
+| 10  | Payout batches per period                     | ✅ Inclusion is "approved and unpaid as of `periodEnd`", so a late approval is never orphaned                             |
+| 11  | Admin approval before disbursement            | ✅ `payout.approve`, conditional update, recorded approver                                                                |
+| 12  | RazorpayX disbursement with reference capture | 🟡 Built; **UPI only until module 2 registers a bank fund account** (#51)                                                 |
+| 13  | Reversal → deduction, never a clawback        | ✅ Unique `dedupeKey` makes "cannot deduct twice" a database guarantee                                                    |
+
+### The three rules with teeth
+
+- **Nothing is marked paid on submission.** `disburse` moves the batch to
+  `processing`; only the RazorpayX webhook moves it to `paid`, and the
+  commissions inside are marked paid at that same moment (US-8.11).
+- **No bank debit exists anywhere in the module.** A reversal after payment
+  leaves the row `paid` — it was — and raises a `PayoutDeduction` consumed by a
+  later batch. A deduction bigger than a period is taken partially, so a payout
+  is never negative and the debt is never written off.
+- **Approve and disburse are different grants**, neither on `ops`, and both
+  actors are stored.
+
+### The safety net
+
+The completion hook is non-fatal, like the counter beside it — a Pro must never
+see "finish job" fail. But a missing counter is derived data and a missing
+commission row is money, so `CommissionWorkerService` sweeps completed jobs with
+no pay row every 15 minutes, approves rows past the hold window, and re-evaluates
+rating incentives for anyone who has worked recently (a review arrives days after
+the job, so the completion hook cannot have seen it). Every pass is also an admin
+endpoint — a background job nobody can trigger is a background job nobody can
+test.
+
+No new dependency: it is the self-rescheduling `setTimeout` + Redis lock pattern
+`ProCountersService` already uses.
+
+### Known gaps in this module
+
+| Gap                                | Why                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------ |
+| `streak` / `surge_slot` evaluators | **Undefined business rules.** Configurable, visibly inert, excluded from the Pro app |
+| Bank-transfer payouts              | #51 — needs `razorpayxFundAccountId` from module 2's verification step               |
+| Payout-failure notification        | Module 12. `status = failed` is set and visible; nothing is pushed                   |
+| Ledger entries                     | Module 9. `COMMISSION_LEDGER_PORT` logs and returns                                  |
+| Salary                             | **Out of scope by decision** (#45). Every earnings response carries `salaryNote`     |
+
+---
+
+## 9 · Ledger & Reconciliation — 9/9 built
+
+**Date built:** 2026-08-12. Plan: [`MODULE_9_LEDGER_PLAN.md`](MODULE_9_LEDGER_PLAN.md).
+Conflicts settled: **#55** (a reversal after payment books nothing).
+
+The smallest money module by a distance — ~2,000 lines against module 8's 4,500
+— because more than half the feature list was already built elsewhere and this
+module calls it rather than reimplementing it.
+
+| #   | Feature                                    | Status                                                                                                               |
+| --- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| 1   | Append-only double-entry with a hash chain | ✅ One row, two legs. `UPDATE`/`DELETE` raise at the database — verified against a real Postgres                     |
+| 2   | Six entry types                            | ✅ `platform_revenue` is in the vocabulary and nothing writes it — it is computed                                    |
+| 3   | Typed references on every entry            | ✅ booking, order, payout, Pro, customer, plus the gateway payment id                                                |
+| 4   | Nightly reconciliation across the system   | ✅ 02:30 IST. Wraps module 7's engine and adds four ledger-scope checks                                              |
+| 5   | Discrepancy detection                      | ✅ Module 7's six kinds plus `missing_ledger_entry`, `ledger_amount_mismatch`, `orphan_ledger_entry`, `chain_broken` |
+| 6   | Discrepancy resolution with attribution    | 🟡 Notes and attribution on one endpoint. **No workflow** — that is a ticket system (module 11)                      |
+| 7   | Nightly counter rebuild, drift self-heals  | ✅ Calls `ProCountersService.rebuildAll` — module 6's job, not a second implementation                               |
+| 8   | Collections, payouts due, outstanding dues | ✅ Queries over the entries, no cached totals                                                                        |
+| 9   | Finance dashboard                          | 🟡 In today, owed out, cash on the street. **Variance trend deferred** — needs run history first                     |
+
+### This module writes no business logic
+
+Every event that should produce an entry already existed as a typed call into a
+no-op port. `LedgerAdapterService` fills in all eight and does nothing else; the
+only decision it makes is which two accounts a movement is between. Modules 7
+and 8 did not change to accommodate it beyond gaining a `register()` on their
+delegates — the fourth time this codebase has used that pattern.
+
+### The accounts, and the invariant they produce
+
+`payable:pro:<proId>` is credited as work accrues and debited at settlement by
+the net plus every deduction recovered. **It returns to exactly zero** for a Pro
+with nothing in flight, whatever mixture of reversals, bonuses and deductions
+they have been through — which is the strongest reconciliation check in the
+module, and the reason #55 was worth getting right.
+
+`cash_in_hand:<proId>` is the account `Pro.cashInHand` is a cache of, so "do the
+cached balance and the books agree" is a real check rather than a tautology.
+
+### What is enforced where
+
+| Guarantee                    | Enforced by                                                          |
+| ---------------------------- | -------------------------------------------------------------------- |
+| No entry is ever edited      | A Postgres trigger that **raises** — not a rule that silently no-ops |
+| One event books one entry    | `sourceRef` unique index                                             |
+| The chain cannot fork        | A single advisory lock every write serialises on                     |
+| Sequences are gap-free       | `MAX + 1` under that lock, never a Postgres sequence                 |
+| Both shares sum to the price | Module 8's CHECK constraint, upstream of here                        |
+
+### Known gaps in this module
+
+| Gap                  | Why                                                                                                       |
+| -------------------- | --------------------------------------------------------------------------------------------------------- |
+| Variance trend       | Needs a history of runs that does not exist yet. `GET /admin/reconciliation/runs` is where it accumulates |
+| Discrepancy workflow | States, assignment, threads — deferred to module 11 rather than half-built here                           |
+| Serial ledger writes | One global chain lock. Fine at this volume; per-account chains is the fix at 100×                         |
+
+---
+
+## 10 · Training & Reviews — 15/15 built
+
+Built 2026-08-12. Two folders, `src/modules/reviews` and `src/modules/training`,
+5,538 lines, 29 endpoints, four new tables and two altered. Full detail in
+[`MODULE_10_TRAINING_REVIEWS_PLAN.md`](MODULE_10_TRAINING_REVIEWS_PLAN.md).
+
+### What this module actually unblocked
+
+The customer→Pro rating pipeline was already complete **except its first step**.
+`Pro.ratingSum` existed, module 6 rebuilt it nightly, module 5's
+`smoothedRating()` fed it into the dispatch tie-break at weight 0.15, and
+`GET /pros/me/ratings` displayed it. Nothing anywhere created a row. Feature 15
+was ninety percent built and idle for want of one `POST`.
+
+### Features
+
+| #     | Feature                                                          | State                                                                                                     |
+| ----- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| 1–3   | Trade-level modules, trade-specific delivery, resumable progress | ✅ Curriculum is a **query** — `ProService → Service → category → ancestors`. No enrolment table to drift |
+| 4     | Quiz attempts with a capped retry                                | ✅ Graded **server-side**; the answer key is in no Pro-facing DTO, asserted by serialise-and-search       |
+| 5     | Mandatory-module gate on activation                              | ✅ Port into module 6, **ships off** behind `training.gateActivation`                                     |
+| 6     | In-job reference material                                        | ✅ `GET /pros/me/training?serviceId=`                                                                     |
+| 7–8   | Offline cache, download-on-wifi                                  | ✅ Manifest with size, `version` and 6-hour URLs. Caching is the app's; the backend supplies the inputs   |
+| 9     | Offline sessions, enrolment, attendance                          | ✅ Admin-driven throughout; capacity enforced, walk-ins refused until enrolled                            |
+| 10–11 | Reviews in both directions                                       | ✅ One table, `reviewerType`, controlled vocabularies both ways                                           |
+| 12    | `Customer.ratingSum` / `ratingCount`                             | ✅ Mirrored, and rebuilt by the same nightly job                                                          |
+| 13    | Pro ratings to ops and the next Pro                              | ✅ `GET /pros/me/bookings/:id/customer-advisory` — aggregated, tag-only, nobody named                     |
+| 14    | Moderation                                                       | ✅ Reason and admin id required by a CHECK. **Hides content, keeps the score**                            |
+| 15    | Exact rating counters                                            | ✅ Moved in the insert's transaction; the nightly rebuild proves they agree                               |
+
+### The hazard this module found
+
+[**#61**](CONFLICTS_AND_DECISIONS.md). Adding a second reviewer direction to the
+same table would have made the 02:00 rebuild fold a Pro's opinion of a customer
+into that Pro's own public rating — silently, hours after deploy, from the job
+that is supposed to _correct_ drift, and only for Pros diligent enough to flag
+difficult households.
+
+Measured against the real database: a five-star Pro would have read 3.5.
+
+Three call sites needed the direction filter, not two. The third —
+`incentive-evaluation.service.ts`, where a Pro could have reached a five-star
+bonus by rating their own customers — surfaced only because the schema change
+broke the compile.
+
+### Known gaps
+
+| Gap                           | Why                                                                                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| No request-level privacy test | No DB-backed HTTP suite exists to hang one on. Covered by per-query assertions and controller guards instead — see §16.4 of the plan |
+| The gate has never run on     | Correct by design: it stays off until a trade's mandatory modules are loaded                                                         |
+| No training content exists    | Every curriculum is empty, which is right, and means the Pro screens are untested against real data                                  |
+| `recordReview` still present  | Dead, deprecated, and module 6's to delete                                                                                           |
+
+---
+
 ## 13 · Geo & Routing — instalment 1 of 2: service areas
 
 Owns `Area`, `AreaService` and `ProArea`, plus the one function that turns a pin
@@ -459,6 +638,50 @@ flip a city on accumulates before anyone flips it. Conflict #43.
 `geo/geo.types.ts` (re-exported, so no import changed); one optional parameter
 on `findEligiblePros`; a third port on module 4 (`SERVICEABILITY_PORT`) and its
 call in booking creation.
+
+---
+
+## 13b · Routing & ETA — built 2026-08-12
+
+`src/routing/`, infrastructure beside `src/geocoding/` for the same reason
+spelled out in #49: dispatch (5), bookings (4) and geo (13) all need road travel
+time and none of them can own it without closing an import cycle.
+
+| Concern            | Answer                                                                                                                            |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Which API          | Google **Routes** `computeRouteMatrix`. Not Distance Matrix — Google marked that legacy in 2025 and new projects cannot enable it |
+| Provider selection | By key presence, like the geocoder. `ROUTING_PROVIDER` overrides                                                                  |
+| Without a key      | Dispatch still ranks correctly from straight lines. **No customer ETA is published**                                              |
+| Batch              | One call for N candidates, not N calls. Dispatch's question is a matrix                                                           |
+| Ordering           | Results placed by `originIndex` — Google returns them out of order, verified live                                                 |
+| Failure            | Every path degrades to straight lines. A routing outage never takes the live map down                                             |
+| Cost control       | Cache keyed on origin rounded to ~110 m, 60s TTL. A GPS ping every few seconds costs ~1 call a minute                             |
+
+### The rule that shapes the customer-facing half
+
+**A straight-line guess is never published as an arrival time.**
+
+`TravelEstimate.source` says whether an answer came from a road graph, and
+`BookingEtaService` returns `null` for anything that did not. Ranking only needs
+the ordering to be right and crow-flight preserves it; a customer reads "8
+minutes" as a promise. `etaMinutes: null` is a real answer meaning "no number
+worth showing" — the app renders "on the way".
+
+Null also covers a **stale** position: an ETA computed from where a Pro was five
+minutes ago, presented as where they are now, is the same lie `isStale` exists
+to prevent, only harder to spot because a number looks authoritative.
+
+### Verified live
+
+Against the real key, Vijay Nagar → Rajwada: **28 minutes, 7,917 m, traffic-aware**,
+538 ms fresh and **1 ms cached**. The matrix ranked the nearer origin first, and
+Google's raw reply came back with `originIndex: 1` before `0` — the exact
+out-of-order case the positional mapping exists for.
+
+### Still not built
+
+`Directions` for a drawn route polyline. Nothing renders one, and the field mask
+that would fetch it multiplies the per-element cost.
 
 ---
 
@@ -513,6 +736,32 @@ That is why module 2 is 8/9 rather than 9/9.
 ---
 
 ## Verification
+
+**Run 2026-08-12, after the module 10 build:**
+
+| Check                   | Result                                                         |
+| ----------------------- | -------------------------------------------------------------- |
+| `npx jest` (unit)       | **67 suites / 918 tests passed** — was 62/831 before module 10 |
+| `npm run test:e2e`      | **8 suites / 181 tests passed** — was 8/179                    |
+| `npm run typecheck`     | **Pass**                                                       |
+| `npm run build`         | **Pass**                                                       |
+| `eslint`                | **Pass**, zero warnings                                        |
+| `prisma validate`       | **Pass**                                                       |
+| `prisma migrate deploy` | **21/21 applied** against the local cluster                    |
+| Live boot               | **224 routes mapped** (was 194); training gate registered      |
+
+Two things module 10 could not prove with mocks were run against Postgres
+directly, each inside a rolled-back transaction:
+
+- **[#61](CONFLICTS_AND_DECISIONS.md), the reviewer direction.** One booking,
+  two reviews, the real rebuild statements. Filtered: Pro 5/1, customer 2/1.
+  Unfiltered, which is what would have shipped: Pro 7/2 — a five-star Pro
+  reading 3.5.
+- **All eight new CHECK constraints**, each in its own PL/pgSQL block so a
+  failed statement cannot poison the next trial and turn a failure into a false
+  pass. 8/8 refused what they should refuse.
+
+---
 
 **Run 2026-08-10, after the module 4 build:**
 
@@ -582,7 +831,7 @@ Reproduction: `test/manual/run-all-curl-tests.ps1` (honours `CURL_TEST_APP_LOG`)
 
 ---
 
-## Migrations (12 — all applied and verified 2026-08-10)
+## Migrations (21 — all applied and verified 2026-08-12)
 
 ```
 20260807112307_init
@@ -596,8 +845,27 @@ Reproduction: `test/manual/run-all-curl-tests.ps1` (honours `CURL_TEST_APP_LOG`)
 20260809000000_add_pro_standing_sources
 20260810120000_add_service_catalog          ← new
 20260810120100_link_service_foreign_keys    ← new, HIGH BLAST RADIUS, guard verified
-20260810140000_add_booking_lifecycle        ← new, guard verified
+20260810140000_add_booking_lifecycle        ← guard verified
+20260810160000_add_dispatch_scoring
+20260811120000_add_payments_orders_and_cash
+20260811120100_add_service_allows_cash
+20260811140000_add_service_areas
+20260811160000_relative_dispatch_reach
+20260811180000_area_naming
+20260812120000_add_commission_and_payouts
+20260812160000_add_ledger_and_reconciliation
+20260812180000_add_training_and_reviews     ← new, DROPS a unique index
 ```
+
+`add_training_and_reviews` is the only migration so far that **removes** a
+constraint: `reviews.bookingId UNIQUE` becomes
+`UNIQUE (bookingId, reviewerType)`. Safe only because no review row has ever
+been written — nothing called the writer. It also caught
+[#62](CONFLICTS_AND_DECISIONS.md): a first draft re-declared
+`reviews_rating_check`, which already existed, and the four `ADD COLUMN`
+statements ahead of it **stayed applied** after the failure. Prisma does not
+wrap a migration file in a transaction, and `migrate resolve --rolled-back`
+clears the bookkeeping row without touching the schema.
 
 `link_service_foreign_keys` is separate from the catalogue tables on purpose: it rewrites `pro_services.serviceId` and `bookings.serviceId` from `TEXT` to `UUID` and adds foreign keys, so it fails on any row whose `serviceId` is not a real `services.id`. **Seed the catalogue and remap any existing rows before running it.**
 
