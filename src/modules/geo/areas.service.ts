@@ -239,10 +239,15 @@ export class AreasService {
       );
     }
 
-    // A name a human typed is `manual` forever after. That is what makes the
-    // naming pass safe to re-run: it only ever touches `generated` rows, so it
-    // can never overwrite a decision somebody made.
-    const renamed = input.name !== undefined && input.name !== area.name;
+    // A name a human submitted is `manual` forever after. That is what makes
+    // the naming pass safe to re-run: it only ever touches `generated` rows,
+    // so it can never overwrite a decision somebody made.
+    //
+    // Submitting the SAME name still counts, and has to: accepting a geocoded
+    // suggestion unchanged is the most common review outcome, and requiring an
+    // edit to record it would leave every correct suggestion stuck reading
+    // "unreviewed" forever.
+    const renamed = input.name !== undefined;
 
     return this.prisma.area.update({
       where: { id },

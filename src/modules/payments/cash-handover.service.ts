@@ -1,9 +1,21 @@
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { apiError } from '../../common/utils';
-import type { CashHandover } from '../../prisma/client';
+import type { CashHandover, Prisma } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { fromPaise, toPaise } from './payments.money';
 import { LEDGER_PORT, type LedgerPort } from './ports/ledger.port';
+
+/** Enough to identify the person handing the money over, and no more. */
+const HANDOVER_PRO_SELECT = {
+  id: true,
+  fullName: true,
+  phone: true,
+  employeeCode: true,
+} satisfies Prisma.ProSelect;
+
+export type PendingHandover = CashHandover & {
+  pro: Prisma.ProGetPayload<{ select: typeof HANDOVER_PRO_SELECT }>;
+};
 
 @Injectable()
 export class CashHandoverService {
@@ -199,10 +211,19 @@ export class CashHandoverService {
     });
   }
 
-  listPending(): Promise<CashHandover[]> {
+  /**
+   * The queue an admin counts money against.
+   *
+   * The Pro is joined in because the row is worked from a desk with a person
+   * standing at it: "who is this" is the first question, and a uuid does not
+   * answer it. Selected fields only — the counting screen needs a name, a way
+   * to check it against an ID card, and nothing else.
+   */
+  listPending(): Promise<PendingHandover[]> {
     return this.prisma.cashHandover.findMany({
       where: { status: 'declared' },
       orderBy: { declaredAt: 'asc' },
+      include: { pro: { select: HANDOVER_PRO_SELECT } },
     });
   }
 

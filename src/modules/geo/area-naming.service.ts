@@ -182,13 +182,36 @@ export class AreaNamingService {
    * Nominatim returns a full address line — "Vijay Nagar, Indore, Madhya
    * Pradesh, India". The first component is the locality, which is the part an
    * admin recognises; the rest is the city and country they already know.
+   *
+   * Google returns the same field shaped differently. Where a pin sits between
+   * settlements — which a grid cell centre very often does — it prefixes a
+   * **Plus Code**: "22HJ+7H Brahmankhedi, Madhya Pradesh, India", or just
+   * "WX4Q+P83" when it cannot name the place at all. Taking the first
+   * component verbatim therefore produced area names like "22HJ+7H
+   * Brahmankhedi" the moment a Google key was configured.
+   *
+   * So the code is stripped and the village name behind it survives. When the
+   * code was the *whole* answer, nothing is substituted: the city name is
+   * already known and would just produce "Dewas", "Dewas 2", "Dewas 3" across
+   * a grid. A placeholder is the more truthful result — it keeps the cell on
+   * the `pending` worklist, which is where a square nobody can identify
+   * belongs.
    */
   private pickName(addressLine: string): string | null {
-    const first = addressLine.split(',')[0]?.trim();
-    if (!first) return null;
+    const first = addressLine.split(',')[0]?.trim() ?? '';
+    // Plus Codes draw from a fixed 20-character alphabet, which is what keeps
+    // this from eating a real name that happens to contain a '+'.
+    const name = first
+      .replace(
+        /^[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\b/i,
+        '',
+      )
+      .trim();
+
+    if (!name) return null;
     // A bare house number or plot number names nothing useful.
-    if (/^\d+$/.test(first)) return null;
-    return first.slice(0, 120);
+    if (/^\d+$/.test(name)) return null;
+    return name.slice(0, 120);
   }
 
   /**

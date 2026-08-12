@@ -5,6 +5,21 @@ import {
   REFUND_STATUSES,
 } from '../payments.types';
 
+/** The booking a payment belongs to, by the number a human quotes. */
+export class OrderBookingDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'HB-2026-000123' })
+  bookingNumber: string;
+
+  @ApiProperty()
+  status: string;
+
+  @ApiProperty({ enum: ['online', 'cash'] })
+  paymentMode: string;
+}
+
 /**
  * Swagger-only mirror of the Prisma Order model.
  *
@@ -19,6 +34,13 @@ export class OrderDto {
 
   @ApiProperty()
   bookingId: string;
+
+  @ApiPropertyOptional({
+    type: OrderBookingDto,
+    description:
+      'Present on the list, where support searches by booking number.',
+  })
+  booking?: OrderBookingDto;
 
   @ApiProperty()
   customerId: string;

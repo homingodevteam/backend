@@ -19,6 +19,18 @@ import { LEDGER_PORT, type LedgerPort } from './ports/ledger.port';
 import { RazorpayClient, RazorpayError } from './razorpay.client';
 import { verifyCheckoutSignature } from './razorpay.signature';
 
+/** What a payment conversation actually starts from. */
+const ORDER_BOOKING_SELECT = {
+  id: true,
+  bookingNumber: true,
+  status: true,
+  paymentMode: true,
+} satisfies Prisma.BookingSelect;
+
+export type OrderWithBooking = Order & {
+  booking: Prisma.BookingGetPayload<{ select: typeof ORDER_BOOKING_SELECT }>;
+};
+
 /** What Checkout hands back to the app, and what the app posts to verify. */
 export interface CheckoutHandoff {
   orderId: string;
@@ -542,6 +554,11 @@ export class OrdersService {
     return order;
   }
 
+  /**
+   * The booking is joined in because support searches by booking number, not
+   * by uuid — "HB-2026-000123" is what the customer reads off their receipt
+   * and what every conversation about a payment starts with.
+   */
   list(where: Prisma.OrderWhereInput, take: number, skip: number) {
     return this.prisma.$transaction([
       this.prisma.order.findMany({
@@ -549,6 +566,7 @@ export class OrdersService {
         orderBy: { createdAt: 'desc' },
         take,
         skip,
+        include: { booking: { select: ORDER_BOOKING_SELECT } },
       }),
       this.prisma.order.count({ where }),
     ]);

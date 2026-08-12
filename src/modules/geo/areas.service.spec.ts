@@ -189,6 +189,46 @@ describe('AreasService · generateGridForCity', () => {
   });
 });
 
+describe('AreasService · update · reviewing a name', () => {
+  /**
+   * The review step of the naming workflow. A geocoded suggestion that is
+   * already right is accepted by saving it unchanged — if that did not record
+   * the decision, every correct suggestion would read "unreviewed" forever and
+   * a re-run could overwrite it.
+   */
+  it('marks a name manual even when it is submitted unchanged', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(
+      anArea({ name: 'Vijay Nagar', nameSource: 'geocoded' }),
+    );
+    deps.prisma.area.update.mockResolvedValue(anArea());
+
+    await build(deps).update('area-vn', { name: 'Vijay Nagar' });
+
+    expect(deps.prisma.area.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ nameSource: 'manual' }),
+      }),
+    );
+  });
+
+  it('leaves nameSource alone when the name was not part of the request', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(
+      anArea({ nameSource: 'generated' }),
+    );
+    deps.prisma.area.update.mockResolvedValue(anArea());
+
+    await build(deps).update('area-vn', { isActive: false });
+
+    const data = deps.prisma.area.update.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(data.nameSource).toBeUndefined();
+  });
+});
+
 describe('AreasService · overlapsFor', () => {
   /**
    * The meaning inverted when the shape changed. With circles overlap was

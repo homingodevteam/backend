@@ -97,6 +97,21 @@ export class CashBalanceDto {
   openHandoverId: string | null;
 }
 
+/** Who is standing at the desk with the money. */
+export class HandoverProDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  fullName: string | null;
+
+  @ApiProperty()
+  phone: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  employeeCode: string | null;
+}
+
 /** Swagger-only mirror of the Prisma CashHandover model. */
 export class CashHandoverDto {
   @ApiProperty()
@@ -128,4 +143,11 @@ export class CashHandoverDto {
 
   @ApiPropertyOptional({ nullable: true })
   notes: string | null;
+
+  @ApiPropertyOptional({
+    type: HandoverProDto,
+    description:
+      'Present on the pending queue, which is worked person by person.',
+  })
+  pro?: HandoverProDto;
 }

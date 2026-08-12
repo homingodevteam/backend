@@ -242,3 +242,54 @@ describe('AreaNamingService · progressFor', () => {
     );
   });
 });
+
+/**
+ * Google answers a pin between settlements with a Plus Code, and a grid cell
+ * centre very often *is* between settlements. Configuring a key therefore used
+ * to start producing area names like "22HJ+7H Brahmankhedi".
+ */
+describe('AreaNamingService · Google Plus Codes', () => {
+  async function nameFrom(
+    addressLine: string,
+    cityCandidates: string[] = ['Dewas'],
+  ): Promise<string | undefined> {
+    const deps = buildDeps();
+    deps.prisma.area.findMany.mockResolvedValue([aCell()]);
+    deps.prisma.area.count.mockResolvedValue(1);
+    deps.geocoder.reverseGeocode.mockResolvedValue({
+      addressLine,
+      cityCandidates,
+      stateName: 'Madhya Pradesh',
+      attribution: 'test',
+    });
+
+    await build(deps).start('city-dewas');
+    await settle();
+
+    const call = deps.prisma.area.updateMany.mock.calls[0] as
+      [{ data: { name: string } }] | undefined;
+    return call?.[0].data.name;
+  }
+
+  it('strips the Plus Code and keeps the village', async () => {
+    expect(await nameFrom('22HJ+7H Brahmankhedi, Madhya Pradesh, India')).toBe(
+      'Brahmankhedi',
+    );
+  });
+
+  /**
+   * Substituting the city here would name a whole grid "Dewas", "Dewas 2",
+   * "Dewas 3" — noise dressed as data. A placeholder keeps the cell on the
+   * worklist, which is the honest answer for a square nobody can identify.
+   */
+  it('leaves the cell unnamed when the Plus Code was the whole answer', async () => {
+    expect(await nameFrom('WX4Q+P83, Madhya Pradesh, India')).toBeUndefined();
+  });
+
+  /** Nominatim's shape must keep working — it is still the default provider. */
+  it('leaves a plain locality alone', async () => {
+    expect(
+      await nameFrom('Vijay Nagar, Indore, Madhya Pradesh, India', ['Indore']),
+    ).toBe('Vijay Nagar');
+  });
+});
