@@ -69,16 +69,31 @@ export class S3Service {
     return { key, uploadUrl, expiresIn: UPLOAD_URL_TTL_SECONDS };
   }
 
-  /** Short-lived presigned GET — the only way anything ever reads a private object. */
+  /**
+   * Short-lived presigned GET — the only way anything ever reads a private
+   * object.
+   *
+   * `ttlSeconds` defaults to the five minutes every existing caller gets, and
+   * exists for one case: training video. Five minutes is right for a KYC
+   * document opened on an admin screen and wrong for a 48 MB file being pulled
+   * down over Indian mobile data, where the URL has to outlive the download
+   * and the watch. Module 10 passes six hours.
+   *
+   * Lengthening a TTL is a convenience risk rather than a disclosure one *for
+   * content that is not confidential* — platform-authored training material is
+   * identical for every Pro. Do not reach for it on a document that is about
+   * one person.
+   */
   async createViewUrl(
     key: string,
+    ttlSeconds: number = VIEW_URL_TTL_SECONDS,
   ): Promise<{ viewUrl: string; expiresIn: number }> {
     const viewUrl = await getSignedUrl(
       this.client,
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
-      { expiresIn: VIEW_URL_TTL_SECONDS },
+      { expiresIn: ttlSeconds },
     );
 
-    return { viewUrl, expiresIn: VIEW_URL_TTL_SECONDS };
+    return { viewUrl, expiresIn: ttlSeconds };
   }
 }
