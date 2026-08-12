@@ -2,6 +2,7 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { apiError } from '../../common/utils';
 import { RedisService } from '../../redis/redis.service';
 import { ProsService } from '../pros/pros.service';
+import { BookingEtaService } from './booking-eta.service';
 import { BookingsService } from './bookings.service';
 import type { BookingStatus } from './booking.types';
 
@@ -25,7 +26,13 @@ export interface TrackingView {
   /** True when the Pro's phone has stopped reporting. */
   isStale: boolean;
   lastReportedAt: Date | null;
-  /** Always null for now — ETA computation is module 13's. */
+  /**
+   * Road minutes to the door, or `null`.
+   *
+   * `null` is a real answer, not a placeholder: no live position, or no road
+   * route available. A straight-line guess is **never** published here — see
+   * `BookingEtaService`.
+   */
   etaMinutes: number | null;
 }
 
@@ -49,6 +56,7 @@ export class BookingTrackingService {
     private readonly redis: RedisService,
     // The cold-flush fallback lives on the Pro record, which module 6 owns.
     private readonly pros: ProsService,
+    private readonly eta: BookingEtaService,
   ) {}
 
   async getTracking(
@@ -71,23 +79,27 @@ export class BookingTrackingService {
       );
     }
 
-    const base = {
-      status: booking.status,
-      proId: booking.proId,
-      etaMinutes: null,
-    };
+    const base = { status: booking.status, proId: booking.proId };
 
     if (!booking.proId) {
-      return { ...base, position: null, isStale: true, lastReportedAt: null };
+      return {
+        ...base,
+        position: null,
+        isStale: true,
+        lastReportedAt: null,
+        etaMinutes: null,
+      };
     }
 
     const live = await this.redis.geoPosition(PRO_LIVE_GEO_KEY, booking.proId);
     if (live) {
+      const position = { lat: live.latitude, lng: live.longitude };
       return {
         ...base,
-        position: { lat: live.latitude, lng: live.longitude },
+        position,
         isStale: false,
         lastReportedAt: null,
+        etaMinutes: await this.eta.forBooking(bookingId, position),
       };
     }
 
@@ -95,18 +107,33 @@ export class BookingTrackingService {
     // record, and label it honestly rather than passing it off as current.
     const pro = await this.pros.getById(booking.proId);
     if (!pro.lastKnownLat || !pro.lastKnownLng) {
-      return { ...base, position: null, isStale: true, lastReportedAt: null };
+      return {
+        ...base,
+        position: null,
+        isStale: true,
+        lastReportedAt: null,
+        etaMinutes: null,
+      };
     }
 
     const age = pro.lastLocationAt
       ? Date.now() - pro.lastLocationAt.getTime()
       : Number.POSITIVE_INFINITY;
+    const isStale = age > BookingTrackingService.STALE_AFTER_MS;
+    const position = { lat: pro.lastKnownLat, lng: pro.lastKnownLng };
 
     return {
       ...base,
-      position: { lat: pro.lastKnownLat, lng: pro.lastKnownLng },
-      isStale: age > BookingTrackingService.STALE_AFTER_MS,
+      position,
+      isStale,
       lastReportedAt: pro.lastLocationAt ?? null,
+      // No ETA from a stale pin. The number would be computed from where the
+      // Pro was several minutes ago and read as where they are now, which is
+      // the same lie the `isStale` flag exists to prevent — just harder to
+      // notice, because a number looks more authoritative than a dot.
+      etaMinutes: isStale
+        ? null
+        : await this.eta.forBooking(bookingId, position),
     };
   }
 }

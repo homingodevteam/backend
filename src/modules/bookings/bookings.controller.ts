@@ -238,7 +238,10 @@ export class BookingsController {
       'Position is read from Redis and never stored on the booking. A Pro ' +
       'whose phone has gone quiet is reported as `isStale` rather than shown ' +
       'at a frozen pin — a stuck marker reads as "they’ve parked", not "we ' +
-      'lost them". `etaMinutes` is null until Geo & Routing (module 13) exists.',
+      'lost them".\n\n' +
+      '`etaMinutes` is a traffic-aware road estimate, or **null** — which is a ' +
+      'real answer meaning "no number worth showing", not a placeholder. ' +
+      'Render it as "on the way".',
   })
   @ApiOkEnvelope(TrackingDto)
   @ApiErrorEnvelope(

@@ -1,5 +1,7 @@
 import { DispatchScoringService } from './dispatch-scoring.service';
 import type { DispatchSettings } from './dispatch.types';
+import { HaversineRouter } from '../../routing/haversine.router';
+import { RoutedTravelTimeService } from './ports/travel-time.port';
 
 /**
  * The rules, tested directly.
@@ -42,30 +44,18 @@ function buildDeps() {
     geoPosition: jest.fn().mockResolvedValue(null),
   };
   const settings = { getNumber: jest.fn(), getString: jest.fn() };
-  // Real arithmetic, not a stub — the haversine-over-assumed-speed estimate
-  // is the thing under test in half these cases.
+  /**
+   * Real arithmetic, not a stub — the straight-line estimate is the thing
+   * under test in half these cases.
+   *
+   * Wrapping the production classes rather than reimplementing haversine here:
+   * a second copy in the test can agree with itself while disagreeing with the
+   * code, which is the one failure a test like this must not have.
+   */
+  const routed = new RoutedTravelTimeService(new HaversineRouter());
   const travel = {
-    estimateMinutes: jest.fn(
-      (
-        aLat: number,
-        aLng: number,
-        bLat: number,
-        bLng: number,
-        speed: number,
-      ) => {
-        const R = 6371;
-        const toRad = (d: number) => (d * Math.PI) / 180;
-        const dLat = toRad(bLat - aLat);
-        const dLng = toRad(bLng - aLng);
-        const s =
-          Math.sin(dLat / 2) ** 2 +
-          Math.cos(toRad(aLat)) *
-            Math.cos(toRad(bLat)) *
-            Math.sin(dLng / 2) ** 2;
-        const km = 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
-        return Promise.resolve(Math.ceil((km / (speed || 20)) * 60));
-      },
-    ),
+    estimateMinutes: jest.fn(routed.estimateMinutes.bind(routed)),
+    estimateManyMinutes: jest.fn(routed.estimateManyMinutes.bind(routed)),
   };
   return { prisma, redis, settings, travel };
 }

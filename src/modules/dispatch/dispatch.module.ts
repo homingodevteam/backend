@@ -15,7 +15,7 @@ import { DispatchService } from './dispatch.service';
 import { ProDispatchController } from './pro-dispatch.controller';
 import { RealDispatchAdapter } from './real-dispatch.adapter';
 import {
-  HaversineTravelTimeService,
+  RoutedTravelTimeService,
   TRAVEL_TIME_PORT,
 } from './ports/travel-time.port';
 
@@ -54,7 +54,7 @@ import {
     DispatchService,
     DispatchScoringService,
     RealDispatchAdapter,
-    { provide: TRAVEL_TIME_PORT, useClass: HaversineTravelTimeService },
+    { provide: TRAVEL_TIME_PORT, useClass: RoutedTravelTimeService },
   ],
   exports: [DispatchService],
 })
