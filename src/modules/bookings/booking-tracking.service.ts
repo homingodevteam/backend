@@ -12,7 +12,11 @@ const PRO_LIVE_GEO_KEY = 'pros:live';
  * Statuses where a customer is actually waiting for someone to arrive. Outside
  * these, tracking is meaningless and showing a pin would be misleading.
  */
-const TRACKABLE_STATUSES: BookingStatus[] = ['assigned', 'en_route', 'arrived'];
+export const TRACKABLE_STATUSES: BookingStatus[] = [
+  'assigned',
+  'en_route',
+  'arrived',
+];
 
 export interface TrackingView {
   status: string;

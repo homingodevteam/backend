@@ -69,6 +69,18 @@ model Area {
 
   name String
 
+  /// Grid position (`A1`, `C3`) for a generated cell; null for a hand-drawn
+  /// area. Survives renaming, because ops keeps talking about "cell C3" long
+  /// after it has been renamed to "Vijay Nagar".
+  gridRef String?
+
+  /// generated | geocoded | manual — where `name` came from.
+  ///
+  /// The naming pass only ever overwrites `generated`, so a suggestion can
+  /// never clobber a name a human chose. Also tells an admin at a glance which
+  /// cells are still unreviewed placeholders.
+  nameSource String @default("manual")
+
   /// Half-open on both axes: a point belongs when
   /// `minLat <= lat < maxLat AND minLng <= lng < maxLng`.
   minLat Float
@@ -936,8 +948,21 @@ model AssignmentCandidate {
   finalRankScore    Float?
 
   /// unavailable | no_service | out_of_range | rotation_cooldown | already_tried
+  ///
+  /// `out_of_range` is **no longer produced** — the absolute travel cap was
+  /// removed (CONFLICTS_AND_DECISIONS #47). Historical rows keep it, and the
+  /// value stays legal so those rows still read.
   excludedReason String?
-  evaluatedAt    DateTime @default(now())
+
+  /// How far the engine had to look to find this candidate:
+  /// `area` | `neighbouring` | `city`.
+  ///
+  /// Widening is never silent. A booking served from outside its own area is
+  /// a staffing signal, and without this column the only evidence would be
+  /// that the Pro happens to live elsewhere (#46).
+  searchTier String @default("area")
+
+  evaluatedAt DateTime @default(now())
 
   @@unique([bookingId, attemptNumber, proId])
   @@index([proId, isWinner])

@@ -8,7 +8,12 @@ import { AreasService } from '../geo/areas.service';
 import { CashEligibilityService } from '../payments/cash-eligibility.service';
 import { ProCountersService } from '../pros/pro-counters.service';
 import { DispatchScoringService } from './dispatch-scoring.service';
-import type { AssignmentOutcome, ScoredCandidate } from './dispatch.types';
+import type {
+  AssignmentOutcome,
+  DispatchSettings,
+  ScoredCandidate,
+  SearchTier,
+} from './dispatch.types';
 
 const QUEUE_KEY = 'dispatch:queue';
 const LOCK_PREFIX = 'dispatch:lock:';
@@ -153,16 +158,14 @@ export class DispatchService {
         ? await this.cash.blockedProIds(booking.address.cityId)
         : [];
 
-    // Module 13's area posting — a FILTER, never the ranking. Distance and
-    // travel time still order whoever survives it.
-    //
-    // `null` means nobody is posted to this area *at all*, which is a
-    // configuration gap rather than a supply gap: applying an empty list would
-    // exclude every Pro in the city and report `no_supply` for a city that
-    // simply has not had its Pros posted yet. So no posting means no filter.
-    const postedToArea = booking.areaId
-      ? await this.areas.proIdsForArea(booking.areaId)
-      : null;
+    const { proIds: postedToArea, tier: searchTier } =
+      await this.widenUntilFound(
+        booking.areaId,
+        booking.serviceId,
+        booking.address.cityId,
+        overCashCeiling,
+        settings,
+      );
 
     const eligible = await this.scoring.findEligiblePros(
       booking.serviceId,
@@ -204,7 +207,22 @@ export class DispatchService {
       ranked,
       winner?.proId ?? null,
       settings.candidatePoolSize,
+      searchTier,
     );
+
+    // The replacement for the old out_of_range exclusion. Nobody is refused
+    // for being far, but a winner well past the soft target is thin supply
+    // showing itself — surfaced rather than silently absorbed (#47).
+    if (
+      winner?.travelTimeMinutes != null &&
+      winner.travelTimeMinutes > settings.travelSoftTargetMinutes
+    ) {
+      this.logger.warn(
+        `Booking ${bookingId} assigned at ~${winner.travelTimeMinutes} min travel, ` +
+          `past the ${settings.travelSoftTargetMinutes} min target (tier: ${searchTier}). ` +
+          'Assigned anyway — a long trip beats no service.',
+      );
+    }
 
     if (!winner) {
       return this.closeUnassignable(
@@ -383,6 +401,115 @@ export class DispatchService {
 
   // ------------------------------------------------------------------
 
+  /**
+   * The widening ladder: the booking's own area, then its neighbours, then the
+   * whole city.
+   *
+   * A service can be bookable in an area that has nobody free to take it right
+   * now — `AreaService` and `ProArea` are configured by different people for
+   * different reasons, and even a correctly staffed area empties out when
+   * everyone is mid-job. Refusing the customer because a willing Pro sits three
+   * kilometres outside a grid line drawn by an admin would be an arbitrary
+   * boundary doing real damage.
+   *
+   * So the boundary is a **preference, not a fence**. Each rung is tried only
+   * because the one before it came back empty, and the tier is recorded on
+   * every candidate row — widening is never silent, because "we served Rau
+   * from Vijay Nagar eleven times this week" is a staffing report, and it is
+   * invisible if the only trace is which Pro happened to win.
+   *
+   * `allowWidenBeyondArea` turns the ladder off per city for anyone who wants
+   * strict boundaries.
+   *
+   * @returns the ids to restrict to (`null` = no restriction) and which rung
+   *          produced them
+   */
+  private async widenUntilFound(
+    areaId: string | null,
+    serviceId: string,
+    cityId: string | null,
+    excludeProIds: string[],
+    settings: DispatchSettings,
+  ): Promise<{ proIds: string[] | null; tier: SearchTier }> {
+    // No area on the booking — taken before areas existed, or the pin
+    // resolved to none. There is nothing to widen *from*, so this is a
+    // city-wide search and always was.
+    if (!areaId) return { proIds: null, tier: 'city' };
+
+    const inArea = await this.areas.proIdsForArea(areaId);
+
+    // NOBODY IS POSTED HERE AT ALL — `null`, not an empty list. That is a
+    // configuration gap, and there is no posting data to honour, so there is
+    // nothing to widen *from*: this is an unrestricted city search and always
+    // was. Returning `[]` here would exclude every Pro in the city and report
+    // `no_supply` for a city that simply has not had its Pros posted yet —
+    // exactly the confusion #31 exists to prevent, and strict mode must not
+    // reintroduce it.
+    if (inArea === null) return { proIds: null, tier: 'city' };
+
+    if (await this.anyEligible(inArea, serviceId, cityId, excludeProIds)) {
+      return { proIds: inArea, tier: 'area' };
+    }
+
+    if (!settings.allowWidenBeyondArea) {
+      // Strict mode, and Pros *are* posted here — they are just all busy. Hold
+      // the boundary and let the caller report no_supply against the area
+      // rather than quietly serving it from elsewhere.
+      return { proIds: inArea, tier: 'area' };
+    }
+
+    const neighbours = await this.areas.neighbourIdsOf(
+      areaId,
+      settings.neighbourMarginKm,
+    );
+    if (neighbours.length > 0) {
+      const nearby = await this.areas.proIdsForAreas([areaId, ...neighbours]);
+      if (await this.anyEligible(nearby, serviceId, cityId, excludeProIds)) {
+        this.logger.log(
+          `Widened to ${neighbours.length} neighbouring areas for area ${areaId} — nobody in the area itself could take it.`,
+        );
+        return { proIds: nearby, tier: 'neighbouring' };
+      }
+    }
+
+    // Last rung. `null` drops the area filter entirely, leaving the city
+    // boundary on findEligiblePros as the only bound — which is the honest
+    // outer limit now that the travel cap is gone (#47).
+    this.logger.warn(
+      `Widened to the whole city for area ${areaId}: neither it nor its neighbours had an eligible Pro. ` +
+        'Repeated widening here is a staffing gap, not a dispatch failure.',
+    );
+    return { proIds: null, tier: 'city' };
+  }
+
+  /**
+   * Would this restriction actually yield anyone?
+   *
+   * Asked before committing to a rung rather than after, because "the area has
+   * Pros posted" and "the area has a Pro who can take this job" are different
+   * questions — posting says nothing about holding the service, being approved,
+   * or being over the cash ceiling.
+   */
+  private async anyEligible(
+    proIds: string[] | null,
+    serviceId: string,
+    cityId: string | null,
+    excludeProIds: string[],
+  ): Promise<boolean> {
+    // `null` means "no restriction", which can only be answered by the
+    // unrestricted query — and that is the last rung anyway.
+    if (proIds === null) return false;
+    if (proIds.length === 0) return false;
+
+    const found = await this.scoring.findEligiblePros(
+      serviceId,
+      cityId,
+      excludeProIds,
+      proIds,
+    );
+    return found.length > 0;
+  }
+
   private async previouslyTried(bookingId: string): Promise<Set<string>> {
     const winners = await this.prisma.assignmentCandidate.findMany({
       where: { bookingId, isWinner: true },
@@ -403,6 +530,7 @@ export class DispatchService {
     ranked: ScoredCandidate[],
     winnerProId: string | null,
     poolSize: number,
+    searchTier: SearchTier,
   ): Promise<void> {
     const keep = new Set(ranked.slice(0, poolSize).map((c) => c.proId));
     const rows = all.filter(
@@ -415,6 +543,7 @@ export class DispatchService {
         attemptNumber,
         proId: c.proId,
         isWinner: c.proId === winnerProId,
+        searchTier,
         windowStart: c.window?.start ?? null,
         windowEnd: c.window?.end ?? null,
         originType: c.origin?.originType ?? null,

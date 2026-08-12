@@ -78,7 +78,7 @@ describe('dispatch scoring maths', () => {
   describe('finalRankScore', () => {
     const base = {
       travelTimeMinutes: 10,
-      maxTravelMinutes: 60,
+      travelSoftTargetMinutes: 30,
       rotationScore: 1,
       durationFitScore: 1,
       ratingScore: 4,
@@ -117,6 +117,55 @@ describe('dispatch scoring maths', () => {
         ratingScore: 5,
       });
       expect(nearLowerRated).toBeGreaterThan(farTopRated);
+    });
+
+    /**
+     * The bug the decay curve exists to prevent. The old form was
+     * `1 - travel / maxTravel` clamped at zero, which was harmless only while
+     * anything past the cap was excluded outright. With the cap gone (#47)
+     * that clamp would make every distant Pro tie at exactly 0 — so a
+     * 70-minute Pro and a 200-minute one would rank the same, and rotation
+     * would silently pick the winner.
+     */
+    it('still separates two Pros who are both far past the target', () => {
+      const far = finalRankScore({ ...base, travelTimeMinutes: 70 });
+      const further = finalRankScore({ ...base, travelTimeMinutes: 200 });
+
+      expect(far).toBeGreaterThan(further);
+      // Neither has bottomed out — the curve never reaches zero.
+      expect(further).toBeGreaterThan(0);
+    });
+
+    it('keeps ordering by distance at any range', () => {
+      const scores = [5, 20, 45, 90, 180, 400].map((travelTimeMinutes) =>
+        finalRankScore({ ...base, travelTimeMinutes }),
+      );
+
+      for (let i = 1; i < scores.length; i++) {
+        expect(scores[i]).toBeLessThan(scores[i - 1]);
+      }
+    });
+
+    /**
+     * The target is a scale, not a limit. Widening it does not admit anyone
+     * new — nobody was being refused — it flattens the curve, so dispatch
+     * weighs distance less against rating and rotation.
+     */
+    it('treats the soft target as a scale rather than a threshold', () => {
+      const tight = finalRankScore({
+        ...base,
+        travelTimeMinutes: 60,
+        travelSoftTargetMinutes: 15,
+      });
+      const relaxed = finalRankScore({
+        ...base,
+        travelTimeMinutes: 60,
+        travelSoftTargetMinutes: 60,
+      });
+
+      expect(relaxed).toBeGreaterThan(tight);
+      // Both still score — neither is excluded, which is the whole point.
+      expect(tight).toBeGreaterThan(0);
     });
 
     it('never reads acceptanceRate — it is not even an input', () => {

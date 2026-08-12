@@ -9,7 +9,12 @@ function buildDeps() {
       findMany: jest.fn().mockResolvedValue([]),
     },
     $transaction: jest.fn(),
-    pro: { findUnique: jest.fn().mockResolvedValue({ id: 'pro-1' }) },
+    pro: {
+      findUnique: jest.fn().mockResolvedValue({ id: 'pro-1' }),
+      // Staffed by default, so the cases that are not about the gate are not
+      // about the gate.
+      count: jest.fn().mockResolvedValue(3),
+    },
     area: {
       findUnique: jest.fn(),
       findFirst: jest.fn().mockResolvedValue(null),
@@ -279,6 +284,148 @@ describe('AreasService · overlapsFor', () => {
   });
 });
 
+describe('AreasService · neighbourIdsOf', () => {
+  /** Cells sharing an edge are neighbours; the rectangle model makes this two lines. */
+  it('finds cells that share an edge', async () => {
+    const deps = buildDeps();
+    const cell = anArea();
+    deps.prisma.area.findUnique.mockResolvedValue(cell);
+    deps.prisma.area.findMany.mockResolvedValue([
+      anArea({
+        id: 'north',
+        minLat: cell.maxLat,
+        maxLat: cell.maxLat + 0.054,
+      }),
+      anArea({
+        id: 'east',
+        minLng: cell.maxLng,
+        maxLng: cell.maxLng + 0.058,
+      }),
+    ]);
+
+    expect(await build(deps).neighbourIdsOf('area-vn', 1)).toEqual([
+      'north',
+      'east',
+    ]);
+  });
+
+  it('excludes cells across town', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(anArea());
+    deps.prisma.area.findMany.mockResolvedValue([
+      anArea({
+        id: 'far',
+        minLat: 23.2,
+        maxLat: 23.3,
+        minLng: 77.4,
+        maxLng: 77.5,
+      }),
+    ]);
+
+    expect(await build(deps).neighbourIdsOf('area-vn', 1)).toEqual([]);
+  });
+
+  /**
+   * Widening a Bhopal booking into Indore because the grids happen to abut
+   * would be worse than not assigning it.
+   */
+  it('never leaves the city', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(anArea());
+
+    await build(deps).neighbourIdsOf('area-vn', 1);
+
+    expect(deps.prisma.area.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ cityId: 'city-indore' }),
+      }),
+    );
+  });
+});
+
+describe('AreasService · the staffing gate', () => {
+  /**
+   * The check that stops "we sell it here" and "someone can do it here" from
+   * drifting apart. They are configured by different people for different
+   * reasons, and nothing else notices when they disagree (#46).
+   */
+  it('refuses to switch a service on where nobody is staffed', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(anArea());
+    deps.prisma.pro.count.mockResolvedValue(0);
+
+    expect(
+      await statusOf(
+        build(deps).setServiceAvailability('area-vn', 'svc-1', true),
+      ),
+    ).toBe(409);
+    expect(deps.prisma.areaService.upsert).not.toHaveBeenCalled();
+  });
+
+  it('counts approved Pros posted to the area who hold the service', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(anArea());
+
+    await build(deps).countProsCapableInArea('area-vn', 'svc-1');
+
+    expect(deps.prisma.pro.count).toHaveBeenCalledWith({
+      where: {
+        status: 'approved',
+        areas: { some: { areaId: 'area-vn', isActive: true } },
+        services: { some: { serviceId: 'svc-1', isActive: true } },
+      },
+    });
+  });
+
+  /**
+   * Deliberately ignores `isAvailable`. That flag is today's roster, and a
+   * service must not become unsellable because everyone is off shift this
+   * afternoon — this answers the structural question, not the timing one.
+   */
+  it('does not consider whether those Pros are on duty right now', async () => {
+    const deps = buildDeps();
+    await build(deps).countProsCapableInArea('area-vn', 'svc-1');
+
+    const { where } = deps.prisma.pro.count.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(where).not.toHaveProperty('isAvailable');
+  });
+
+  /**
+   * Switching OFF must always work — otherwise an area that lost its last Pro
+   * could never be corrected, which is exactly when someone needs to.
+   */
+  it('never blocks switching a service off', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(anArea());
+    deps.prisma.pro.count.mockResolvedValue(0);
+
+    await build(deps).setServiceAvailability('area-vn', 'svc-1', false);
+
+    expect(deps.prisma.areaService.upsert).toHaveBeenCalled();
+  });
+
+  it('applies nothing when a bulk activation includes an unstaffed area', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(anArea());
+    deps.prisma.service.findUnique.mockResolvedValue({ id: 'svc-1' });
+    deps.prisma.area.findMany.mockResolvedValue([
+      anArea({ id: 'a' }),
+      anArea({ id: 'b' }),
+    ]);
+    deps.prisma.pro.count.mockResolvedValueOnce(3).mockResolvedValueOnce(0);
+    deps.prisma.$transaction = jest.fn();
+
+    expect(
+      await statusOf(
+        build(deps).setServiceAcrossAreas('svc-1', ['a', 'b'], true),
+      ),
+    ).toBe(409);
+    expect(deps.prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
 describe('AreasService · setServiceAvailability', () => {
   it('upserts, so re-enabling a service is not a constraint error', async () => {
     const deps = buildDeps();
@@ -514,11 +661,27 @@ describe('AreasService · proIdsForArea', () => {
     const deps = buildDeps();
     await build(deps).proIdsForArea('area-vn');
 
+    // Single-area lookups go through the multi-area query dispatch's widening
+    // step uses, so there is one path to keep correct rather than two.
     expect(deps.prisma.proArea.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { areaId: 'area-vn', isActive: true },
+        where: { areaId: { in: ['area-vn'] }, isActive: true },
       }),
     );
+  });
+
+  it('de-duplicates a Pro posted to several of the areas asked about', async () => {
+    const deps = buildDeps();
+    deps.prisma.proArea.findMany.mockResolvedValue([
+      { proId: 'pro-1' },
+      { proId: 'pro-1' },
+      { proId: 'pro-2' },
+    ]);
+
+    expect(await build(deps).proIdsForAreas(['a', 'b'])).toEqual([
+      'pro-1',
+      'pro-2',
+    ]);
   });
 });
 

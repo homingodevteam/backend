@@ -20,6 +20,7 @@ import { PermissionCode } from '../identity/constants/permission-code';
 import { RequirePermissions } from '../identity/decorators/require-permissions.decorator';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../identity/guards/permissions.guard';
+import { AreaNamingService } from './area-naming.service';
 import { AreasService } from './areas.service';
 import {
   AreaDto,
@@ -50,7 +51,10 @@ import {
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('admin/areas')
 export class AdminAreasController {
-  constructor(private readonly areas: AreasService) {}
+  constructor(
+    private readonly areas: AreasService,
+    private readonly naming: AreaNamingService,
+  ) {}
 
   @Post('bulk')
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
@@ -70,8 +74,9 @@ export class AdminAreasController {
     HttpStatus.NOT_FOUND,
     HttpStatus.CONFLICT,
   )
-  createMany(@Body() dto: BulkCreateAreasDto): Promise<AreaDto[]> {
-    return this.areas.createMany(dto.cityId, dto.areas);
+  async createMany(@Body() dto: BulkCreateAreasDto): Promise<AreaDto[]> {
+    const created = await this.areas.createMany(dto.cityId, dto.areas);
+    return created.map((area) => this.areas.describe(area));
   }
 
   @Post('generate-grid')
@@ -97,8 +102,9 @@ export class AdminAreasController {
     HttpStatus.NOT_FOUND,
     HttpStatus.CONFLICT,
   )
-  generateGrid(@Body() dto: GenerateGridDto): Promise<AreaDto[]> {
-    return this.areas.generateGridForCity(dto);
+  async generateGrid(@Body() dto: GenerateGridDto): Promise<AreaDto[]> {
+    const cells = await this.areas.generateGridForCity(dto);
+    return cells.map((cell) => this.areas.describe(cell));
   }
 
   @Get('service-matrix')
@@ -134,20 +140,70 @@ export class AdminAreasController {
     HttpStatus.NOT_FOUND,
     HttpStatus.CONFLICT,
   )
-  create(@Body() dto: CreateAreaDto): Promise<AreaDto> {
-    return this.areas.create(dto);
+  async create(@Body() dto: CreateAreaDto): Promise<AreaDto> {
+    return this.areas.describe(await this.areas.create(dto));
   }
 
   @Get()
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
-  @ApiOperation({ summary: 'Areas in a city' })
+  @ApiOperation({
+    summary: 'Areas in a city, each ready to be recognised',
+    description:
+      'Every row carries its centre, its size in kilometres and a **Google ' +
+      'Maps link** — four raw coordinates tell a human nothing, one click ' +
+      'tells them everything. `nameSource` says whether the name is still a ' +
+      'generated placeholder (`A1`), a geocoded suggestion awaiting review, ' +
+      'or something a person chose.',
+  })
   @ApiOkEnvelope(AreaDto, { isArray: true })
   @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
   list(
     @Query('cityId') cityId: string,
     @Query('includeInactive') includeInactive?: string,
   ): Promise<AreaDto[]> {
-    return this.areas.listForCity(cityId, includeInactive === 'true');
+    return this.areas.describeForCity(cityId, includeInactive === 'true');
+  }
+
+  @Post('suggest-names')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({
+    summary: 'Suggest a real name for every unnamed grid cell',
+    description:
+      'Reverse-geocodes the centre of each cell still called `A1` and ' +
+      'pre-fills a suggestion, turning "identify thirty-six mystery squares" ' +
+      'into "review thirty-six pre-filled names".\n\n' +
+      '**Returns immediately and keeps working.** The geocoder honours ' +
+      "Nominatim's one-request-per-second policy, so a 36-cell grid takes " +
+      'over half a minute — too long to hold a request open. Poll ' +
+      '`GET /admin/areas/naming-progress`, or re-read the area list and watch ' +
+      'the names fill in.\n\n' +
+      '**Never overwrites a name a person chose.** Only cells whose ' +
+      '`nameSource` is still `generated` are touched, so this is safe to ' +
+      're-run and safe to run while someone is renaming.',
+  })
+  @ApiCreatedEnvelope()
+  @ApiErrorEnvelope(
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.FORBIDDEN,
+    HttpStatus.CONFLICT,
+  )
+  suggestNames(@Query('cityId') cityId: string) {
+    return this.naming.start(cityId);
+  }
+
+  @Get('naming-progress')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({
+    summary: 'How far the naming pass has got',
+    description:
+      '`pending` counts cells still carrying a generated placeholder — the ' +
+      'worklist. `suggested` counts geocoded names awaiting review.',
+  })
+  @ApiOkEnvelope()
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
+  namingProgress(@Query('cityId') cityId: string) {
+    return this.naming.progressFor(cityId);
   }
 
   @Patch(':id')
@@ -168,11 +224,11 @@ export class AdminAreasController {
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  update(
+  async update(
     @Param('id') id: string,
     @Body() dto: UpdateAreaDto,
   ): Promise<AreaDto> {
-    return this.areas.update(id, dto);
+    return this.areas.describe(await this.areas.update(id, dto));
   }
 
   @Get(':id/overlaps')

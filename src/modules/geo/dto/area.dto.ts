@@ -276,6 +276,45 @@ export class AreaDto {
   @ApiProperty({ example: 75.9229, description: 'Eastern edge — exclusive.' })
   maxLng: number;
 
+  @ApiPropertyOptional({
+    example: 'C3',
+    nullable: true,
+    description:
+      'Grid position for a generated cell; null for a hand-drawn area. ' +
+      '**Survives renaming** — ops keeps saying "cell C3" long after it became ' +
+      '"Vijay Nagar".',
+  })
+  gridRef: string | null;
+
+  @ApiProperty({
+    enum: ['generated', 'geocoded', 'manual'],
+    description:
+      'Where `name` came from. `generated` is an unreviewed placeholder, ' +
+      '`geocoded` a suggestion awaiting review, `manual` a human decision — ' +
+      'and only `generated` rows are ever overwritten by the naming pass.',
+  })
+  nameSource: string;
+
+  @ApiProperty({ example: 22.7553, description: 'Derived from the bounds.' })
+  centerLat: number;
+
+  @ApiProperty({ example: 75.8937 })
+  centerLng: number;
+
+  @ApiProperty({ example: 6.01, description: 'North-south extent, km.' })
+  heightKm: number;
+
+  @ApiProperty({ example: 5.98, description: 'East-west extent, km.' })
+  widthKm: number;
+
+  @ApiProperty({
+    example: 'https://www.google.com/maps/search/?api=1&query=22.7553,75.8937',
+    description:
+      'Opens this cell’s centre in Google Maps. Four raw coordinates tell a ' +
+      'human nothing; one click tells them what is actually there.',
+  })
+  mapUrl: string;
+
   @ApiProperty()
   isActive: boolean;
 
@@ -284,6 +323,29 @@ export class AreaDto {
 
   @ApiProperty()
   updatedAt: Date;
+}
+
+/**
+ * The customer-facing shape of an area: what it is called and where.
+ *
+ * Deliberately **not** `AreaDto`. A customer reading "we are available in…"
+ * has no use for `gridRef`, `nameSource` or the bounds, and publishing them
+ * would expose that "Vijay Nagar" is really cell C3 of a generated grid whose
+ * name nobody has reviewed. Conflict #34's rule applies: the mapper filters,
+ * the DTO only documents.
+ */
+export class PublicAreaDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'Vijay Nagar' })
+  name: string;
+
+  @ApiProperty()
+  cityId: string;
+
+  @ApiProperty({ example: 'Indore' })
+  cityName: string;
 }
 
 export class ResolvedAreaDto {
@@ -320,6 +382,132 @@ export class ServiceabilityDto {
     enum: ['LOCATION_NOT_SERVICEABLE', 'SERVICE_NOT_AVAILABLE_IN_AREA'],
   })
   code?: string;
+}
+
+export class KnownAddressDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'home' })
+  label: string;
+
+  @ApiProperty({ example: '12 MG Road' })
+  addressLine: string;
+
+  @ApiProperty({ example: 22.7533 })
+  pinLat: number;
+
+  @ApiProperty({ example: 75.8937 })
+  pinLng: number;
+
+  @ApiProperty()
+  cityId: string;
+}
+
+/**
+ * What we already believe about a customer's location, for the app's first
+ * screen — **before** it asks for GPS permission.
+ */
+export class MyLocationDto {
+  @ApiPropertyOptional({
+    enum: ['default_address', 'recent_address'],
+    nullable: true,
+    description:
+      'Where the guess came from. **Null means we know nothing** — a new or ' +
+      'guest customer — which is the signal to prompt for GPS and then call ' +
+      '`/geo/reverse-geocode`. It is a normal first-run state, not an error.',
+  })
+  source: string | null;
+
+  @ApiPropertyOptional({ type: KnownAddressDto, nullable: true })
+  address: KnownAddressDto | null;
+
+  @ApiPropertyOptional({
+    type: ResolvedAreaDto,
+    nullable: true,
+    description:
+      'Re-resolved from the pin on every call, never cached on the address — ' +
+      'areas get redrawn, and a cell saved last month may since have been ' +
+      'renamed, split or switched off.',
+  })
+  area: ResolvedAreaDto | null;
+
+  @ApiProperty()
+  serviceable: boolean;
+
+  @ApiPropertyOptional({ description: 'Safe to show the customer verbatim.' })
+  reason?: string;
+
+  @ApiPropertyOptional({
+    enum: ['NO_KNOWN_LOCATION', 'LOCATION_NOT_SERVICEABLE'],
+  })
+  code?: string;
+}
+
+export class ReverseGeocodeQueryDto {
+  @ApiProperty({ example: 22.7533 })
+  @Type(() => Number)
+  @IsLatitude()
+  lat: number;
+
+  @ApiProperty({ example: 75.8937 })
+  @Type(() => Number)
+  @IsLongitude()
+  lng: number;
+}
+
+/**
+ * A pin turned into words, plus the area it falls in.
+ *
+ * Both halves in one call deliberately: a client that has just moved a map pin
+ * wants to show "12 MG Road, Vijay Nagar" *and* know whether we serve it, and
+ * making that two round trips means the two can disagree on screen.
+ */
+export class ReverseGeocodeDto {
+  @ApiProperty({
+    example: '12 MG Road, Vijay Nagar, Indore, MP 452010, India',
+    description: 'Human-readable, as the provider formats it.',
+  })
+  addressLine: string;
+
+  @ApiPropertyOptional({ nullable: true, example: 'Madhya Pradesh' })
+  stateName: string | null;
+
+  @ApiPropertyOptional({ nullable: true, example: '452010' })
+  postalCode: string | null;
+
+  @ApiProperty({
+    example: 'Indore',
+    isArray: true,
+    description:
+      'Every name the provider offers for the settlement, best first. The ' +
+      'server matches these against its own city list; a client should show ' +
+      'the first.',
+  })
+  cityCandidates: string[];
+
+  @ApiProperty({
+    enum: ['nominatim', 'google'],
+    description: 'Which provider answered. Useful when an address looks wrong.',
+  })
+  provider: string;
+
+  @ApiProperty({
+    example: 'Map data ©2026 Google',
+    description:
+      '**Must be displayed** wherever the address is shown — both providers ' +
+      'require it, Google by licence and OpenStreetMap by ODbL.',
+  })
+  attribution: string;
+
+  @ApiPropertyOptional({
+    type: ResolvedAreaDto,
+    nullable: true,
+    description:
+      'The service area containing this pin, or null if we do not operate ' +
+      'here. Saves a second round trip to /geo/serviceability.',
+  })
+  area: ResolvedAreaDto | null;
 }
 
 /** Query for the location-filtered catalogue. */

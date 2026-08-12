@@ -7,6 +7,14 @@ const expires = new Map();
 const geo = new Map();
 /** List values, keyed by list name — backs the dispatch queue. */
 const lists = new Map();
+/**
+ * Sockets currently in subscriber mode, keyed by channel.
+ *
+ * Real Redis pub/sub is fire-and-forget with no persistence, which is exactly
+ * what live tracking needs and exactly what makes it cheap to fake: deliver to
+ * whoever is listening right now, forget everything else.
+ */
+const channels = new Map();
 
 function live(key) {
   const until = expires.get(key);
@@ -143,13 +151,66 @@ function execute(args) {
   return '-ERR unsupported test command\r\n';
 }
 
+/**
+ * PUBLISH / SUBSCRIBE, enough for the live-tracking fan-out.
+ *
+ * Handled outside `execute` because both are stateful per *connection* rather
+ * than per keyspace: a subscriber holds its socket open and receives pushes it
+ * never asked for, which the request/response shape above cannot express.
+ *
+ * Real Redis pub/sub is fire-and-forget with no persistence — which is exactly
+ * what live tracking wants, and exactly what makes it cheap to fake: deliver to
+ * whoever is listening right now, forget everything else.
+ */
+function handlePubSub(socket, args) {
+  const command = args[0].toLowerCase();
+
+  if (command === 'subscribe') {
+    for (const channel of args.slice(1)) {
+      if (!channels.has(channel)) channels.set(channel, new Set());
+      channels.get(channel).add(socket);
+      socket.write(
+        `*3\r\n$9\r\nsubscribe\r\n${bulk(channel)}:${channels.get(channel).size}\r\n`,
+      );
+    }
+    return true;
+  }
+
+  if (command === 'unsubscribe') {
+    for (const subscribers of channels.values()) subscribers.delete(socket);
+    socket.write('*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n');
+    return true;
+  }
+
+  if (command === 'publish') {
+    const [, channel, payload] = args;
+    const subscribers = channels.get(channel) ?? new Set();
+    for (const subscriber of subscribers) {
+      subscriber.write(`*3\r\n$7\r\nmessage\r\n${bulk(channel)}${bulk(payload)}`);
+    }
+    socket.write(`:${subscribers.size}\r\n`);
+    return true;
+  }
+
+  return false;
+}
+
 net
   .createServer((socket) => {
     // A client reset is a normal disconnect and must not stop the test server.
     socket.on('error', () => undefined);
+    // Otherwise a reconnecting app leaves dead sockets receiving publishes.
+    socket.on('close', () => {
+      for (const subscribers of channels.values()) subscribers.delete(socket);
+    });
     socket.on('data', (data) => {
       const args = parse(data);
-      socket.write(args ? execute(args) : '-ERR malformed command\r\n');
+      if (!args) {
+        socket.write('-ERR malformed command\r\n');
+        return;
+      }
+      if (handlePubSub(socket, args)) return;
+      socket.write(execute(args));
     });
   })
   .listen(port, '127.0.0.1', () => {

@@ -23,7 +23,11 @@ function buildDeps() {
   prisma.$transaction.mockImplementation((callback: (tx: unknown) => unknown) =>
     callback(prisma),
   );
-  const redis = { geoAdd: jest.fn(), geoRemove: jest.fn() };
+  const redis = {
+    geoAdd: jest.fn(),
+    geoRemove: jest.fn(),
+    publish: jest.fn().mockResolvedValue(undefined),
+  };
 
   return { prisma, redis };
 }
@@ -266,6 +270,51 @@ describe('ProsService', () => {
           }),
         }),
       );
+    });
+
+    /**
+     * The ping is what makes a customer's map move. It is *published* rather
+     * than handed to the socket layer directly because `BookingsModule`
+     * already imports this module — Redis is the only route that is not a
+     * cycle, and it is also what carries the frame to the instance actually
+     * holding the customer's socket, which is rarely this one.
+     */
+    it('announces the movement so watching customers get pushed to', async () => {
+      const deps = buildDeps();
+      deps.prisma.pro.findUnique.mockResolvedValue({
+        id: 'p1',
+        status: 'approved',
+        isAvailable: true,
+      });
+      const service = buildService(deps);
+
+      await service.ingestLocation('p1', { lat: 12.9, lng: 77.6 });
+
+      expect(deps.redis.publish).toHaveBeenCalledWith(
+        'tracking:positions',
+        expect.objectContaining({ proId: 'p1', lat: 12.9, lng: 77.6 }),
+      );
+    });
+
+    /**
+     * The durable state — GEO index and the cold flush — is already written by
+     * the time we announce. A Redis pub/sub hiccup must cost one map frame,
+     * not the Pro's location update.
+     */
+    it('still succeeds when the announcement cannot be delivered', async () => {
+      const deps = buildDeps();
+      deps.prisma.pro.findUnique.mockResolvedValue({
+        id: 'p1',
+        status: 'approved',
+        isAvailable: true,
+      });
+      deps.redis.publish.mockRejectedValue(new Error('pubsub down'));
+      const service = buildService(deps);
+
+      await expect(
+        service.ingestLocation('p1', { lat: 12.9, lng: 77.6 }),
+      ).resolves.toBeUndefined();
+      expect(deps.prisma.pro.update).toHaveBeenCalled();
     });
   });
 

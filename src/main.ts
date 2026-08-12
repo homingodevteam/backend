@@ -1,6 +1,7 @@
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import {
   FastifyAdapter,
   NestFastifyApplication,
@@ -53,6 +54,11 @@ async function bootstrap() {
   app.useGlobalInterceptors(new ResponseInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
+  // Socket.IO runs alongside Fastify rather than through it: the gateway
+  // needs its own protocol upgrade, and without this adapter the gateway is
+  // instantiated, logs nothing, and silently never accepts a connection.
+  app.useWebSocketAdapter(new IoAdapter(app));
+
   const swaggerPath = setupSwagger(app, config);
 
   await app.listen(port, host);
@@ -66,5 +72,6 @@ async function bootstrap() {
   Logger.log(`Health check at ${base}/${globalPrefix}/health`, 'Bootstrap');
   if (swaggerPath)
     Logger.log(`API docs at ${base}/${swaggerPath}`, 'Bootstrap');
+  Logger.log(`Live tracking socket at ${base}/tracking`, 'Bootstrap');
 }
 void bootstrap();

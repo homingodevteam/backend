@@ -106,6 +106,29 @@ export function boxesOverlap(a: BoundingBox, b: BoundingBox): boolean {
   );
 }
 
+/**
+ * Grow a box outward by a margin in kilometres.
+ *
+ * What makes "which areas neighbour this one" a two-line question rather than
+ * an adjacency table: expand the box slightly and ask which others it now
+ * overlaps. Cells that merely share an edge qualify; cells across town do not.
+ *
+ * The margin is applied in degrees per axis, so longitude is scaled by the
+ * latitude — a kilometre east is more degrees than a kilometre north.
+ */
+export function expandBox(box: BoundingBox, marginKm: number): BoundingBox {
+  const midLat = (box.minLat + box.maxLat) / 2;
+  const dLat = marginKm / KM_PER_DEGREE_LAT;
+  const dLng = marginKm / kmPerDegreeLng(midLat);
+
+  return {
+    minLat: box.minLat - dLat,
+    maxLat: box.maxLat + dLat,
+    minLng: box.minLng - dLng,
+    maxLng: box.maxLng + dLng,
+  };
+}
+
 /** Approximate area in square kilometres — used to break overlap ties. */
 export function boxAreaSqKm(box: BoundingBox): number {
   const midLat = (box.minLat + box.maxLat) / 2;

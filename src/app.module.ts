@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { GeocodingModule } from './geocoding/geocoding.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { BookingsModule } from './modules/bookings/bookings.module';
@@ -26,6 +27,7 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
       envFilePath: [`.env.${nodeEnv}`, '.env'],
     }),
     PrismaModule,
+    GeocodingModule,
     HealthModule,
     CatalogModule,
     IdentityModule,

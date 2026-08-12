@@ -70,11 +70,23 @@ export interface DispatchSettings {
   candidatePoolSize: number;
   maxAttempts: number;
   rotationCooldownJobs: number;
-  maxTravelMinutes: number;
+  /**
+   * The travel time proximity scores as "good". **Not a limit** — nothing is
+   * excluded for exceeding it (#47). It sets the scale of the decay curve.
+   */
+  travelSoftTargetMinutes: number;
   assumedSpeedKmph: number;
   ratingPriorMean: number;
   ratingPriorWeight: number;
+  /** How far to expand an area when looking for neighbours to widen into. */
+  neighbourMarginKm: number;
+  /** False keeps assignment strictly inside the booking's own area. */
+  allowWidenBeyondArea: boolean;
 }
+
+/** How far the engine had to look to find a candidate. */
+export const SEARCH_TIERS = ['area', 'neighbouring', 'city'] as const;
+export type SearchTier = (typeof SEARCH_TIERS)[number];
 
 /**
  * Great-circle distance in km.
@@ -149,17 +161,48 @@ export function rotationScore(
  * would penalise Pros for undelivered pushes and provider outages — failures
  * that are not theirs.
  */
+/**
+ * Proximity as a decaying curve rather than a capped ratio.
+ *
+ * The old form was `1 - travel / maxTravel`, clamped at zero — which was fine
+ * while anything past `maxTravel` was excluded outright. With the cap gone
+ * (#47) that clamp becomes a bug: every Pro beyond the target would tie at
+ * exactly 0, so a 70-minute Pro and a 200-minute Pro would rank identically
+ * and the tie-break would hand the job to whichever had better rotation.
+ *
+ * This decays hyperbolically and **never reaches zero**, so the ordering by
+ * distance survives at any range:
+ *
+ * ```
+ *   0 min          → 1.00
+ *   soft target    → 0.50
+ *   2× target      → 0.33
+ *   4× target      → 0.20
+ * ```
+ *
+ * The target is a *scale*, not a limit. Doubling it does not admit anyone new
+ * — nobody was being refused — it flattens the curve, making dispatch care
+ * less about distance relative to rating and rotation.
+ */
+export function proximityScore(
+  travelTimeMinutes: number,
+  softTargetMinutes: number,
+): number {
+  const target = Math.max(1, softTargetMinutes);
+  return 1 / (1 + Math.max(0, travelTimeMinutes) / target);
+}
+
 export function finalRankScore(input: {
   travelTimeMinutes: number;
-  maxTravelMinutes: number;
+  travelSoftTargetMinutes: number;
   rotationScore: number;
   durationFitScore: number;
   ratingScore: number;
   offersToday: number;
 }): number {
-  const proximity = Math.max(
-    0,
-    1 - input.travelTimeMinutes / Math.max(1, input.maxTravelMinutes),
+  const proximity = proximityScore(
+    input.travelTimeMinutes,
+    input.travelSoftTargetMinutes,
   );
   // Rating is 1..5; normalise so every term is 0..1 and the weights mean
   // what they look like.

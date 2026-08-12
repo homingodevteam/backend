@@ -5,8 +5,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import type { AreaPostingDto, ProPostingDto } from './dto/area.dto';
 import {
   boxAreaSqKm,
+  boxCenter,
   boxDimensionsKm,
   boxesOverlap,
+  expandBox,
   generateGrid,
   type BoundingBox,
 } from './geo.types';
@@ -180,7 +182,12 @@ export class AreasService {
         this.prisma.area.create({
           data: {
             cityId: input.cityId,
+            // The positional label is both the initial name and a permanent
+            // reference: ops keeps saying "cell C3" after it becomes "Vijay
+            // Nagar", and `gridRef` is what survives the rename.
             name: cell.name,
+            gridRef: cell.name,
+            nameSource: 'generated',
             minLat: cell.minLat,
             maxLat: cell.maxLat,
             minLng: cell.minLng,
@@ -232,7 +239,15 @@ export class AreasService {
       );
     }
 
-    return this.prisma.area.update({ where: { id }, data: input });
+    // A name a human typed is `manual` forever after. That is what makes the
+    // naming pass safe to re-run: it only ever touches `generated` rows, so it
+    // can never overwrite a decision somebody made.
+    const renamed = input.name !== undefined && input.name !== area.name;
+
+    return this.prisma.area.update({
+      where: { id },
+      data: { ...input, ...(renamed ? { nameSource: 'manual' } : {}) },
+    });
   }
 
   listForCity(cityId: string, includeInactive = false): Promise<Area[]> {
@@ -286,13 +301,38 @@ export class AreasService {
       .sort((a, b) => b.overlapSqKm - a.overlapSqKm);
   }
 
-  /** Height, width and centre — all derived, none stored. */
-  describe(area: Area) {
+  /**
+   * An area, plus everything derivable from its bounds that an admin needs to
+   * recognise it: centre, size, and a link that opens the spot in Google Maps.
+   *
+   * The map link is the cheap half of "which square is this?". Four raw
+   * coordinates tell a human nothing; one click tells them everything. The
+   * expensive half — a suggested name — is `AreaNamingService`.
+   *
+   * All derived, none stored. A rectangle already implies its centre, and a
+   * stored copy would be one more thing to keep in step when bounds move.
+   */
+  describe<T extends Area>(area: T) {
+    // Six decimals is ~11 cm — far finer than a 6 km cell needs, and it keeps
+    // float noise out of the payload. A midpoint of two stored floats lands on
+    // 22.686999999999998 often enough that an unrounded map link looks broken.
+    const centre = boxCenter(area);
+    const lat = Number(centre.lat.toFixed(6));
+    const lng = Number(centre.lng.toFixed(6));
+
     return {
+      ...area,
       ...boxDimensionsKm(area),
-      centerLat: (area.minLat + area.maxLat) / 2,
-      centerLng: (area.minLng + area.maxLng) / 2,
+      centerLat: lat,
+      centerLng: lng,
+      mapUrl: `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`,
     };
+  }
+
+  /** The list an admin reviews, each row ready to be recognised. */
+  async describeForCity(cityId: string, includeInactive = false) {
+    const areas = await this.listForCity(cityId, includeInactive);
+    return areas.map((area) => this.describe(area));
   }
 
   private async assertCityExists(cityId: string): Promise<void> {
@@ -336,6 +376,11 @@ export class AreasService {
         },
       ]);
     }
+
+    // Only activation is gated. Switching a service OFF must always be
+    // possible — otherwise an area that lost its last Pro could never be
+    // corrected, which is exactly when someone needs to switch it off.
+    if (isActive) await this.assertStaffed(areaId, serviceId);
 
     return this.prisma.areaService.upsert({
       where: { areaId_serviceId: { areaId, serviceId } },
@@ -400,6 +445,13 @@ export class AreasService {
           })),
         );
       }
+    }
+
+    // Every service being switched ON has to be staffed. Checked before the
+    // transaction opens so a rejection leaves nothing half-applied — the same
+    // all-or-nothing promise the unknown-service check above makes.
+    for (const serviceId of unique) {
+      await this.assertStaffed(areaId, serviceId);
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -493,6 +545,15 @@ export class AreasService {
           code: 'AREA_NOT_FOUND',
         },
       ]);
+    }
+
+    // "AC repair everywhere in Indore" is the call most likely to switch a
+    // service on somewhere nobody is staffed — it names areas in bulk, so
+    // nobody is looking at them one at a time.
+    if (isActive) {
+      for (const areaId of unique) {
+        await this.assertStaffed(areaId, serviceId);
+      }
     }
 
     await this.prisma.$transaction(
@@ -603,13 +664,118 @@ export class AreasService {
    * wearing a supply problem's clothes.
    */
   async proIdsForArea(areaId: string): Promise<string[] | null> {
+    return this.proIdsForAreas([areaId]);
+  }
+
+  /** The same question across several areas — dispatch's widening step. */
+  async proIdsForAreas(areaIds: string[]): Promise<string[] | null> {
+    if (areaIds.length === 0) return null;
+
     const rows = await this.prisma.proArea.findMany({
-      where: { areaId, isActive: true },
+      where: { areaId: { in: areaIds }, isActive: true },
       select: { proId: true },
     });
 
     if (rows.length === 0) return null;
-    return rows.map((row) => row.proId);
+    return [...new Set(rows.map((row) => row.proId))];
+  }
+
+  /**
+   * Areas adjacent to this one, found by expanding its box and asking what it
+   * then overlaps.
+   *
+   * The rectangle model earns its keep here: with circles this needed a
+   * centre-distance heuristic that got the corners wrong. Cells that share an
+   * edge qualify at any margin above zero; cells across town never do.
+   *
+   * Same city only. Widening a Bhopal booking into Indore because the grids
+   * happen to abut would be worse than not assigning it.
+   */
+  async neighbourIdsOf(areaId: string, marginKm: number): Promise<string[]> {
+    const area = await this.findByIdOrFail(areaId);
+
+    const siblings = await this.prisma.area.findMany({
+      where: { cityId: area.cityId, isActive: true, id: { not: areaId } },
+    });
+
+    const grown = expandBox(area, marginKm);
+    return siblings
+      .filter((other) => boxesOverlap(grown, other))
+      .map((other) => other.id);
+  }
+
+  /**
+   * Is there anyone who could actually do this service here?
+   *
+   * The check that stops "we sell it here" and "someone can do it here" from
+   * drifting apart. They are configured independently — `AreaService` by
+   * whoever runs the catalogue, `ProArea` by whoever runs staffing — and
+   * nothing else notices when they disagree.
+   *
+   * Counts **approved** Pros posted to the area who hold the service. It
+   * deliberately ignores `isAvailable`: that flag is today's roster, and a
+   * service should not become unsellable because everyone happens to be off
+   * shift this afternoon. This answers the structural question — is anybody
+   * staffed for this here at all — which is the one that maps to
+   * CONFLICTS_AND_DECISIONS #31's `no_supply`.
+   */
+  async countProsCapableInArea(
+    areaId: string,
+    serviceId: string,
+  ): Promise<number> {
+    return this.prisma.pro.count({
+      where: {
+        status: 'approved',
+        areas: { some: { areaId, isActive: true } },
+        services: { some: { serviceId, isActive: true } },
+      },
+    });
+  }
+
+  /**
+   * Refuses to switch a service on in an area nobody is staffed for.
+   *
+   * Extends US-3.9's city-launch supply gate down one level. That gate blocks
+   * activating a city with no approved Pro; this blocks activating a service
+   * in an area with nobody who can perform it — the same mistake at finer
+   * grain, and now the more likely one, because areas are configured far more
+   * often than cities are launched.
+   *
+   * Fails at the moment someone makes the mistake, to the person making it,
+   * which is the only time it is cheap to fix. The alternative is discovering
+   * it when a customer's booking cannot be assigned.
+   */
+  private async assertStaffed(
+    areaId: string,
+    serviceId: string,
+  ): Promise<void> {
+    const capable = await this.countProsCapableInArea(areaId, serviceId);
+    if (capable > 0) return;
+
+    const [area, service] = await Promise.all([
+      this.prisma.area.findUnique({
+        where: { id: areaId },
+        select: { name: true },
+      }),
+      this.prisma.service.findUnique({
+        where: { id: serviceId },
+        select: { name: true },
+      }),
+    ]);
+
+    throw apiError(
+      `No approved Pro posted to ${area?.name ?? 'this area'} can perform ${service?.name ?? 'this service'}`,
+      HttpStatus.CONFLICT,
+      [
+        {
+          field: 'serviceId',
+          message:
+            'Post a Pro who holds this service to this area first, or the ' +
+            'booking will be taken and then fail to assign',
+          code: 'AREA_NOT_STAFFED_FOR_SERVICE',
+        },
+      ],
+    );
   }
 
   /**

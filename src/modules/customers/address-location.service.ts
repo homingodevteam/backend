@@ -1,10 +1,15 @@
-import { Injectable, UnprocessableEntityException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import type { City } from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
-  AddressGeocoderService,
+  GEOCODER,
+  type GeocoderPort,
   type ReverseGeocodeResult,
-} from './address-geocoder.service';
+} from '../../geocoding/geocoding.types';
 
 export interface ResolvedAddressLocation {
   addressLine: string;
@@ -17,7 +22,7 @@ export interface ResolvedAddressLocation {
 @Injectable()
 export class AddressLocationService {
   constructor(
-    private readonly geocoder: AddressGeocoderService,
+    @Inject(GEOCODER) private readonly geocoder: GeocoderPort,
     private readonly prisma: PrismaService,
   ) {}
 

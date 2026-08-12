@@ -55,19 +55,23 @@ export class DispatchScoringService {
       candidatePoolSize,
       maxAttempts,
       rotationCooldownJobs,
-      maxTravelMinutes,
+      travelSoftTargetMinutes,
       assumedSpeedKmph,
       ratingPriorMean,
       ratingPriorWeight,
+      neighbourMarginKm,
+      allowWiden,
     ] = await Promise.all([
       this.settings.getNumber('assignment.ackWindowSeconds', 120, cityId),
       this.settings.getNumber('dispatch.candidatePoolSize', 10, cityId),
       this.settings.getNumber('dispatch.maxAttempts', 3, cityId),
       this.settings.getNumber('rotation.cooldownJobs', 2, cityId),
-      this.settings.getNumber('dispatch.maxTravelMinutes', 60, cityId),
+      this.settings.getNumber('dispatch.travelSoftTargetMinutes', 30, cityId),
       this.settings.getNumber('dispatch.assumedSpeedKmph', 20, cityId),
       this.settings.getNumber('dispatch.ratingPriorMean', 4, cityId),
       this.settings.getNumber('dispatch.ratingPriorWeight', 5, cityId),
+      this.settings.getNumber('dispatch.neighbourMarginKm', 1, cityId),
+      this.settings.getString('dispatch.allowWidenBeyondArea', 'true', cityId),
     ]);
 
     return {
@@ -75,10 +79,12 @@ export class DispatchScoringService {
       candidatePoolSize,
       maxAttempts,
       rotationCooldownJobs,
-      maxTravelMinutes,
+      travelSoftTargetMinutes,
       assumedSpeedKmph,
       ratingPriorMean,
       ratingPriorWeight,
+      neighbourMarginKm,
+      allowWidenBeyondArea: allowWiden !== 'false',
     };
   }
 
@@ -173,15 +179,24 @@ export class DispatchScoringService {
   }
 
   /**
-   * US-5.7. The next scheduled job's address if there is one, else live GPS,
-   * else home base.
+   * US-5.7. Where the Pro will be *when this slot starts* — which is the
+   * **preceding** committed job's address if there is one, else live GPS, else
+   * home base.
    *
-   * Getting this wrong promises the customer an ETA the Pro cannot meet:
-   * finishing in one part of the city at 2pm makes them a candidate for jobs
-   * near *there* from 2pm, not near their home.
+   * Note the order and read the query carefully: it finds the latest committed
+   * job ending at or before `slotStart`, which is the job *before* this one.
+   * That is deliberate and it is what `last_job_location` means. An earlier
+   * version of this comment said "the next scheduled job", and the local was
+   * named `nextJob` — both wrong, and dangerous, because anyone "fixing" the
+   * query to match the name would break origin resolution entirely.
+   *
+   * The preceding job outranks live GPS on purpose. For a scheduled booking,
+   * where the Pro is *now* is irrelevant — what matters is where they will be
+   * when they set off. Finishing in one part of the city at 2pm makes them a
+   * candidate for jobs near *there* from 2pm, not near their home.
    */
   async resolveOrigin(pro: Pro, slotStart: Date): Promise<TravelOrigin | null> {
-    const nextJob = await this.prisma.booking.findFirst({
+    const precedingJob = await this.prisma.booking.findFirst({
       where: {
         proId: pro.id,
         status: { in: [...COMMITTED_STATUSES] },
@@ -190,11 +205,11 @@ export class DispatchScoringService {
       orderBy: { slotEndAt: 'desc' },
       include: { address: { select: { pinLat: true, pinLng: true } } },
     });
-    if (nextJob?.address) {
+    if (precedingJob?.address) {
       return {
         originType: 'last_job_location',
-        lat: nextJob.address.pinLat,
-        lng: nextJob.address.pinLng,
+        lat: precedingJob.address.pinLat,
+        lng: precedingJob.address.pinLng,
       };
     }
 
@@ -305,16 +320,15 @@ export class DispatchScoringService {
       settings.assumedSpeedKmph,
     );
 
-    if (travelTimeMinutes > settings.maxTravelMinutes) {
-      return {
-        ...base,
-        window,
-        origin,
-        distanceKm,
-        travelTimeMinutes,
-        excludedReason: 'out_of_range',
-      };
-    }
+    // NO DISTANCE EXCLUSION. There used to be one — anything past
+    // `maxTravelMinutes` was dropped as `out_of_range` — and it was an
+    // arbitrary number refusing customers a willing Pro could have served
+    // (CONFLICTS_AND_DECISIONS #47).
+    //
+    // Distance still decides most of the ranking; it just no longer decides
+    // eligibility. The furthest Pro in the city beats nobody, and the city
+    // boundary on `findEligiblePros` is now the only outer bound — a real
+    // operational limit rather than a guess applied to a guessed travel time.
 
     const recentJobs = await this.countRecentJobsAtAddress(
       booking.addressId,
@@ -343,7 +357,7 @@ export class DispatchScoringService {
       offersToday,
       finalRankScore: finalRankScore({
         travelTimeMinutes,
-        maxTravelMinutes: settings.maxTravelMinutes,
+        travelSoftTargetMinutes: settings.travelSoftTargetMinutes,
         rotationScore: rotation,
         durationFitScore: fit,
         ratingScore: rating,

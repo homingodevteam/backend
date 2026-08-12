@@ -11,7 +11,19 @@ function buildDeps() {
   };
   const settings = { getString: jest.fn().mockResolvedValue('false') };
   const catalog = { listServices: jest.fn().mockResolvedValue([]) };
-  return { prisma, settings, catalog };
+  const geocoder = {
+    minIntervalMs: 0,
+    reverseGeocode: jest.fn().mockResolvedValue({
+      addressLine: '12 MG Road, Vijay Nagar, Indore, MP 452010, India',
+      cityCandidates: ['Indore'],
+      stateName: 'Madhya Pradesh',
+      postalCode: '452010',
+      provider: 'google',
+      attribution: 'Map data ©2026 Google',
+    }),
+  };
+  const customers = { listAddresses: jest.fn().mockResolvedValue([]) };
+  return { prisma, settings, catalog, geocoder, customers };
 }
 
 function build(deps: ReturnType<typeof buildDeps>): LocationService {
@@ -19,6 +31,8 @@ function build(deps: ReturnType<typeof buildDeps>): LocationService {
     deps.prisma as never,
     deps.settings as never,
     deps.catalog as never,
+    deps.geocoder,
+    deps.customers as never,
   );
 }
 
@@ -242,6 +256,127 @@ describe('LocationService · checkServiceability', () => {
         })
       ).serviceable,
     ).toBe(true);
+  });
+});
+
+describe('LocationService · myLocation', () => {
+  const savedAddress = {
+    id: 'addr-1',
+    label: 'home',
+    addressLine: '12 MG Road',
+    pinLat: 22.7533,
+    pinLng: 75.8937,
+    cityId: 'city-indore',
+    isDefault: true,
+  };
+
+  it('reports the saved address and the area it currently falls in', async () => {
+    const deps = buildDeps();
+    deps.customers.listAddresses.mockResolvedValue([savedAddress]);
+    deps.prisma.area.findMany.mockResolvedValue([anArea()]);
+
+    const result = await build(deps).myLocation('cust-1');
+
+    expect(result).toMatchObject({
+      source: 'default_address',
+      serviceable: true,
+      address: { id: 'addr-1', addressLine: '12 MG Road' },
+      area: { areaName: 'Vijay Nagar' },
+    });
+  });
+
+  /**
+   * A new or guest customer is the ordinary first-run path, not a failure.
+   * Returning 404 here would make every fresh install look broken; `source:
+   * null` is the signal to ask for GPS.
+   */
+  it('says it knows nothing rather than erroring for a new customer', async () => {
+    const deps = buildDeps();
+    deps.customers.listAddresses.mockResolvedValue([]);
+
+    await expect(build(deps).myLocation('cust-1')).resolves.toMatchObject({
+      source: null,
+      address: null,
+      area: null,
+      serviceable: false,
+      code: 'NO_KNOWN_LOCATION',
+    });
+  });
+
+  /** listAddresses already orders default-first, then newest. */
+  it('falls back to the most recent address when none is default', async () => {
+    const deps = buildDeps();
+    deps.customers.listAddresses.mockResolvedValue([
+      { ...savedAddress, isDefault: false },
+    ]);
+    deps.prisma.area.findMany.mockResolvedValue([anArea()]);
+
+    expect((await build(deps).myLocation('cust-1')).source).toBe(
+      'recent_address',
+    );
+  });
+
+  /**
+   * Re-resolved, never cached on the address: a cell saved last month may
+   * since have been renamed, split, or switched off.
+   */
+  it('re-resolves the area rather than trusting anything stored', async () => {
+    const deps = buildDeps();
+    deps.customers.listAddresses.mockResolvedValue([savedAddress]);
+    deps.prisma.area.findMany.mockResolvedValue([]);
+
+    const result = await build(deps).myLocation('cust-1');
+
+    expect(deps.prisma.area.findMany).toHaveBeenCalled();
+    expect(result).toMatchObject({
+      area: null,
+      serviceable: false,
+      code: 'LOCATION_NOT_SERVICEABLE',
+    });
+    // The address is still returned — the customer should see where we think
+    // they are, even when we cannot serve it.
+    expect(result.address).not.toBeNull();
+  });
+});
+
+describe('LocationService · reverseGeocode', () => {
+  /**
+   * One call, both halves. A client that has just dragged a pin renders the
+   * address and the availability banner together; two round trips let them
+   * disagree on screen for a beat.
+   */
+  it('returns the address and the resolved area together', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findMany.mockResolvedValue([anArea()]);
+
+    const result = await build(deps).reverseGeocode(22.7533, 75.8937);
+
+    expect(result.addressLine).toContain('MG Road');
+    expect(result.attribution).toBe('Map data ©2026 Google');
+    expect(result.area).toMatchObject({ areaName: 'Vijay Nagar' });
+  });
+
+  /**
+   * The address is the provider's; the area is ours. A pin outside our grid
+   * still has a perfectly good street address, and saying so is more useful
+   * than refusing to answer.
+   */
+  it('still returns an address for a pin we do not serve', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findMany.mockResolvedValue([]);
+
+    const result = await build(deps).reverseGeocode(23.2599, 77.4126);
+
+    expect(result.addressLine).toContain('MG Road');
+    expect(result.area).toBeNull();
+  });
+
+  it('rejects a malformed coordinate before calling the provider', async () => {
+    const deps = buildDeps();
+
+    expect(await statusOf(build(deps).reverseGeocode(Number.NaN, 75.89))).toBe(
+      400,
+    );
   });
 });
 
