@@ -6,6 +6,7 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsLatitude,
   IsLongitude,
   IsNotEmpty,
@@ -621,4 +622,224 @@ export class AreaOverlapDto {
       'none — anything here means a hand-edit broke the tiling.',
   })
   overlapSqKm: number;
+}
+
+/**
+ * A rectangle, supplied directly rather than as a centre and a radius.
+ *
+ * `GET /admin/areas/city-bounds` returns one of these for a named city, so the
+ * usual flow is: look the city up, eyeball the size, pass it back here.
+ */
+export class BoundingBoxDto {
+  @ApiProperty({ example: 22.6131 })
+  @Type(() => Number)
+  @IsLatitude()
+  minLat: number;
+
+  @ApiProperty({ example: 22.8349 })
+  @Type(() => Number)
+  @IsLatitude()
+  maxLat: number;
+
+  @ApiProperty({ example: 75.7657 })
+  @Type(() => Number)
+  @IsLongitude()
+  minLng: number;
+
+  @ApiProperty({ example: 75.962 })
+  @Type(() => Number)
+  @IsLongitude()
+  maxLng: number;
+}
+
+export class CityBoundsQueryDto {
+  @ApiProperty({
+    example: 'Indore, Madhya Pradesh, India',
+    description:
+      'Include the state. "Indore" alone is unambiguous; many Indian city ' +
+      'names are not.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  name: string;
+
+  @ApiPropertyOptional({
+    example: 1,
+    minimum: 0.5,
+    maximum: 50,
+    description:
+      'Supply it to be told how many cells that box would produce, before ' +
+      'anything is created.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @Min(0.5)
+  @Max(50)
+  cellSizeKm?: number;
+}
+
+export class CityBoundsDto {
+  @ApiProperty({
+    description: 'What the provider matched. Check it took the right place.',
+  })
+  matchedName: string;
+
+  @ApiProperty({ example: 22.6131 }) minLat: number;
+  @ApiProperty({ example: 22.8349 }) maxLat: number;
+  @ApiProperty({ example: 75.7657 }) minLng: number;
+  @ApiProperty({ example: 75.962 }) maxLng: number;
+
+  @ApiProperty({ example: 20.1, description: 'East-west, kilometres.' })
+  widthKm: number;
+
+  @ApiProperty({ example: 24.6, description: 'North-south, kilometres.' })
+  heightKm: number;
+
+  @ApiPropertyOptional({
+    example: 500,
+    nullable: true,
+    description:
+      'Cells this box would produce at the `cellSizeKm` you asked about. ' +
+      'Null when you did not ask. **Look at it before generating** — most of ' +
+      'them will need deactivating, and 500 is a very different afternoon ' +
+      'from 36.',
+  })
+  cellCount: number | null;
+
+  @ApiProperty({ enum: ['google', 'nominatim'] })
+  provider: string;
+
+  @ApiProperty({
+    description: 'Must be displayed wherever the result is shown.',
+  })
+  attribution: string;
+}
+
+export class GenerateGridForBoxDto extends BoundingBoxDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  cityId: string;
+
+  @ApiProperty({
+    example: 1,
+    minimum: 0.5,
+    maximum: 50,
+    description: 'Side length of one cell.',
+  })
+  @Type(() => Number)
+  @Min(0.5)
+  @Max(50)
+  cellSizeKm: number;
+}
+
+export class DeactivateOutsideDto extends BoundingBoxDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  cityId: string;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Report what would be deactivated and change nothing. Worth running ' +
+      'first — this is a bulk operation on a live service map.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+}
+
+export class DeactivateOutsideResultDto {
+  @ApiProperty({ description: 'Active areas examined.' }) considered: number;
+  @ApiProperty() deactivated: number;
+  @ApiProperty({ description: 'Left active — their centre is inside the box.' })
+  kept: number;
+  @ApiProperty() dryRun: boolean;
+
+  @ApiProperty({
+    type: [String],
+    description: 'Names of what was (or would be) deactivated. Capped at 200.',
+  })
+  names: string[];
+}
+
+export class RegenerateGridDto extends GenerateGridForBoxDto {}
+
+export class RegenerateResultDto {
+  @ApiProperty({
+    description:
+      'Old cells with booking history: deactivated and renamed with a ' +
+      '"(retired ...)" suffix. Never deleted — a booking points at them and ' +
+      'they are the record of where that work was sold.',
+  })
+  retired: number;
+
+  @ApiProperty({
+    description:
+      'Old cells never booked against. Deleted, so their names free up.',
+  })
+  deleted: number;
+
+  @ApiProperty({ type: [AreaDto] })
+  created: AreaDto[];
+}
+
+export class PreviewGridDto extends BoundingBoxDto {
+  @ApiProperty({
+    example: 2,
+    minimum: 0.5,
+    maximum: 50,
+    description: 'Side length of one cell. Try a few before committing.',
+  })
+  @Type(() => Number)
+  @Min(0.5)
+  @Max(50)
+  cellSizeKm: number;
+
+  @ApiPropertyOptional({
+    default: 25,
+    minimum: 0,
+    maximum: 100,
+    description:
+      'How many cells to name for real. Capped so a preview answers in one ' +
+      'request — 500 cells is 500 geocoder calls. `0` returns geometry only ' +
+      'and spends nothing.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  nameLimit?: number;
+}
+
+export class PreviewCellDto {
+  @ApiProperty({ example: 'C3' }) gridRef: string;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'Scheme 94',
+    description:
+      'What the naming pass would suggest. Null means unnamed — either past ' +
+      '`nameLimit`, or the geocoder offered nothing but a plot number, which ' +
+      'is deliberately rejected.',
+  })
+  suggestedName: string | null;
+
+  @ApiProperty({ example: 22.7196 }) minLat: number;
+  @ApiProperty({ example: 22.7376 }) maxLat: number;
+  @ApiProperty({ example: 75.8577 }) minLng: number;
+  @ApiProperty({ example: 75.8772 }) maxLng: number;
+}
+
+export class PreviewGridResultDto {
+  @ApiProperty({ example: 143, description: 'Cells this size would produce.' })
+  cellCount: number;
+
+  @ApiProperty({ description: 'How many of them got a real name.' })
+  named: number;
+
+  @ApiProperty({ type: [PreviewCellDto] })
+  cells: PreviewCellDto[];
 }

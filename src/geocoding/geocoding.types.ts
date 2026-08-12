@@ -5,6 +5,20 @@ export interface ReverseGeocodeResult {
   addressLine: string;
   /** Every name the provider offers for the settlement, best first. */
   cityCandidates: string[];
+  /**
+   * Neighbourhood-level names, best first — the layer between a street and a
+   * city. "Vijay Nagar", "Scheme 94", "Telephone Nagar".
+   *
+   * Structured, not sliced off the front of `addressLine`. That distinction is
+   * the whole reason this field exists: Nominatim leads its address line with
+   * the locality, so splitting on the first comma worked; Google leads with the
+   * **building** — "EW 105", "Pawar Villa", "121" — so the same slice names a
+   * cell after somebody's house. See CONFLICTS_AND_DECISIONS #59.
+   *
+   * Empty when the provider offers nothing at this level, which is honest: a
+   * pin in farmland has no neighbourhood.
+   */
+  localityCandidates: string[];
   stateName: string | null;
   postalCode: string | null;
   /** Which provider answered — `nominatim` or `google`. */
@@ -24,8 +38,37 @@ export interface ReverseGeocodeResult {
  * its keys exist. Nothing that consumes this knows which one answered, beyond
  * the `provider` field it can log.
  */
+/** A city's own extent, as the provider draws it. */
+export interface CityBounds {
+  /** What the provider matched, so an admin can see it took the right place. */
+  matchedName: string;
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+  /** Rough size, for a human sanity-check before it becomes 900 cells. */
+  widthKm: number;
+  heightKm: number;
+  provider: string;
+  attribution: string;
+}
+
 export interface GeocoderPort {
   reverseGeocode(lat: number, lng: number): Promise<ReverseGeocodeResult>;
+
+  /**
+   * A city name to the box it occupies — the forward direction.
+   *
+   * Exists so opening a city does not start with somebody guessing how many
+   * kilometres across it is. Google returns Indore as 24.6 x 20.1 km, which is
+   * the city proper rather than the district; a guessed 30 km square covers
+   * half again as much farmland.
+   *
+   * A **rectangle**, not a radius, because cities are not square and the
+   * difference is real: 20 km east-west against 25 north-south is a fifth of
+   * the generated cells saved before anybody deactivates anything.
+   */
+  geocodeCity(name: string): Promise<CityBounds>;
 
   /**
    * How long a caller must wait between requests.
@@ -41,4 +84,31 @@ export interface GeocoderPort {
    * line changing there.
    */
   readonly minIntervalMs: number;
+}
+
+/** Mean km per degree of latitude. Longitude narrows toward the poles. */
+const KM_PER_DEGREE_LAT = 111.32;
+
+/**
+ * Rough size of a bounding box, for a human to sanity-check.
+ *
+ * Not used for anything the grid depends on — `generateGrid` does its own
+ * exact arithmetic. This is so an admin sees "24.6 x 20.1 km" before agreeing
+ * to something that becomes 500 rows.
+ */
+export function boundsSizeKm(box: {
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+}): { widthKm: number; heightKm: number } {
+  const midLat = (box.minLat + box.maxLat) / 2;
+  const kmPerDegLng = KM_PER_DEGREE_LAT * Math.cos((midLat * Math.PI) / 180);
+
+  return {
+    heightKm: Number(
+      ((box.maxLat - box.minLat) * KM_PER_DEGREE_LAT).toFixed(1),
+    ),
+    widthKm: Number(((box.maxLng - box.minLng) * kmPerDegLng).toFixed(1)),
+  };
 }

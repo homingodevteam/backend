@@ -226,6 +226,77 @@ export function generateGrid(input: {
   return cells;
 }
 
+/**
+ * The same tiling, from a **rectangle** instead of a centre and a radius.
+ *
+ * Cities are not square. Indore is about 25 km north-south and 20 east-west,
+ * so a square big enough to contain it wastes a fifth of its cells on
+ * farmland before anybody deactivates anything. Given a real bounding box —
+ * from `GeocoderPort.geocodeCity`, or drawn by hand — this covers exactly that
+ * box and no more.
+ *
+ * Identical guarantee to `generateGrid`: every boundary is computed once from
+ * one origin per axis, so cell (r, c)'s `maxLat` is bit-identical to cell
+ * (r+1, c)'s `minLat`. Half-open bounds depend on that identity, and it is why
+ * a generated map cannot have a gap.
+ *
+ * The grid is grown **outward from the box's south-west corner** and rounded
+ * up, so the far edges may overshoot by less than one cell. Overshooting is
+ * the safe direction: a pin just outside the box still resolves, where
+ * clipping would leave a hole that only shows up as a customer being told we
+ * do not serve their street.
+ */
+export function generateGridForBounds(input: {
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+  cellSizeKm: number;
+}): GeneratedCell[] {
+  const midLat = (input.minLat + input.maxLat) / 2;
+  const latStep = input.cellSizeKm / KM_PER_DEGREE_LAT;
+  const lngStep = input.cellSizeKm / kmPerDegreeLng(midLat);
+
+  const rows = Math.max(1, Math.ceil((input.maxLat - input.minLat) / latStep));
+  const cols = Math.max(1, Math.ceil((input.maxLng - input.minLng) / lngStep));
+
+  const originLat = input.minLat;
+  const originLng = input.minLng;
+
+  const cells: GeneratedCell[] = [];
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      cells.push({
+        name: `${rowLabel(row)}${col + 1}`,
+        row,
+        col,
+        minLat: originLat + row * latStep,
+        maxLat: originLat + (row + 1) * latStep,
+        minLng: originLng + col * lngStep,
+        maxLng: originLng + (col + 1) * lngStep,
+      });
+    }
+  }
+
+  return cells;
+}
+
+/** Is this cell's centre inside the box? The test bulk deactivation uses. */
+export function centreIsInside(
+  cell: { minLat: number; maxLat: number; minLng: number; maxLng: number },
+  box: { minLat: number; maxLat: number; minLng: number; maxLng: number },
+): boolean {
+  const lat = (cell.minLat + cell.maxLat) / 2;
+  const lng = (cell.minLng + cell.maxLng) / 2;
+  return (
+    lat >= box.minLat &&
+    lat <= box.maxLat &&
+    lng >= box.minLng &&
+    lng <= box.maxLng
+  );
+}
+
 /** 0 → A, 25 → Z, 26 → AA. Spreadsheet convention, because ops reads it. */
 function rowLabel(index: number): string {
   let label = '';

@@ -13,6 +13,7 @@ function buildDeps() {
   const catalog = { listServices: jest.fn().mockResolvedValue([]) };
   const geocoder = {
     minIntervalMs: 0,
+    geocodeCity: jest.fn(),
     reverseGeocode: jest.fn().mockResolvedValue({
       addressLine: '12 MG Road, Vijay Nagar, Indore, MP 452010, India',
       cityCandidates: ['Indore'],

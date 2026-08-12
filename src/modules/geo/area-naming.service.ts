@@ -2,6 +2,7 @@ import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { apiError } from '../../common/utils';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GEOCODER, type GeocoderPort } from '../../geocoding/geocoding.types';
+import { pickAreaName } from './area-name';
 import { boxCenter } from './geo.types';
 
 export interface NamingProgress {
@@ -144,7 +145,7 @@ export class AreaNamingService {
           centre.lat,
           centre.lng,
         );
-        const suggestion = this.pickName(geocoded.addressLine);
+        const suggestion = pickAreaName(geocoded);
         if (!suggestion) {
           failed += 1;
           continue;
@@ -179,9 +180,7 @@ export class AreaNamingService {
   }
 
   /**
-   * Nominatim returns a full address line — "Vijay Nagar, Indore, Madhya
-   * Pradesh, India". The first component is the locality, which is the part an
-   * admin recognises; the rest is the city and country they already know.
+   * Kept for the fallback path only — see `pickAreaName`, which is what runs.
    */
   private pickName(addressLine: string): string | null {
     const first = addressLine.split(',')[0]?.trim();
