@@ -113,6 +113,66 @@ describe('pickAreaName', () => {
   it('returns null when the provider offered nothing at all', () => {
     expect(pickAreaName(geocoded({ addressLine: '' }))).toBeNull();
   });
+
+  /**
+   * Every string below came off one 36-cell Indore grid, and every one of them
+   * was accepted as an area name. A wrong name that looks like a decision is
+   * worse than a visible `C3` placeholder: the placeholder is obviously
+   * unreviewed, while "Shalimar Residency" gets approved at a glance and then
+   * routes bookings by it.
+   */
+  it.each([
+    ['75-A'], // a plot, written number-first
+    ['677/13'], // khasra number
+    ['291/1'], // survey number
+    ['Shalimar Residency'], // one building
+    ['Bda Duplex'],
+    ['Bonsai Countywalk'],
+    ['HIlink City Complex'],
+  ])('refuses %s — a plot or a single building, not an area', (value) => {
+    expect(
+      pickAreaName(
+        geocoded({ localityCandidates: [value], addressLine: value }),
+      ),
+    ).toBeNull();
+  });
+
+  /**
+   * Google answers "Indore" for any cell inside Indore it cannot resolve more
+   * finely. It passes every other check and identifies nothing, so a grid ends
+   * up with "Indore", "Indore 2", "Indore 3" — which is how a map looks
+   * finished while telling an admin nothing.
+   */
+  it('refuses the city its own name', () => {
+    expect(
+      pickAreaName(
+        geocoded({ localityCandidates: ['Indore'], addressLine: 'Indore' }),
+        'Indore',
+      ),
+    ).toBeNull();
+  });
+
+  it('matches the city name regardless of case or padding', () => {
+    expect(
+      pickAreaName(geocoded({ localityCandidates: ['  indore '] }), 'Indore'),
+    ).toBeNull();
+  });
+
+  it('takes a real locality even when the city name follows it', () => {
+    expect(
+      pickAreaName(
+        geocoded({ localityCandidates: ['Vijay Nagar', 'Indore'] }),
+        'Indore',
+      ),
+    ).toBe('Vijay Nagar');
+  });
+
+  /** Without a city name to compare against, nothing new is refused. */
+  it('still accepts the name when no city was passed', () => {
+    expect(pickAreaName(geocoded({ localityCandidates: ['Indore'] }))).toBe(
+      'Indore',
+    );
+  });
 });
 
 describe('tidyAreaName', () => {

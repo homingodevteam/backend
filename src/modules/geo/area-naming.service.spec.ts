@@ -9,6 +9,9 @@ function buildDeps() {
       findFirst: jest.fn().mockResolvedValue(null),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
+    // Read so the namer can refuse the city's own name — Google answers
+    // "Indore" for any cell inside Indore it cannot resolve more finely.
+    city: { findUnique: jest.fn().mockResolvedValue({ name: 'Indore' }) },
   };
   const geocoder = {
     reverseGeocode: jest.fn().mockResolvedValue({

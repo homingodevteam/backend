@@ -41,12 +41,24 @@ import type { ReverseGeocodeResult } from '../../geocoding/geocoding.types';
 const PLUS_CODE =
   /^[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\b/i;
 
-/** Rejected outright — these name a plot, not a place. */
+/**
+ * Rejected outright — these name a plot or a building, not a place.
+ *
+ * Every pattern below was added because a real Indore grid produced it. A
+ * service area called "677/13" or "Shalimar Residency" is worse than one still
+ * called "C3": the placeholder is visibly unreviewed, while a plausible-looking
+ * wrong name gets approved at a glance and then routes bookings by it.
+ */
 const NOT_A_PLACE = [
   /^\d+$/, // "121"
   /^[A-Z]{1,3}[\s-]?\d+$/i, // "EW 105", "N-430", "B12"
+  /^\d+[\s-]?[A-Z]{1,3}$/i, // "75-A" — the same thing written backwards
+  /^\d+\s*\/\s*\d+/, // "677/13", "291/1" — khasra and survey numbers
   /^(plot|house|flat|shop|unit|block|gali|lane)\b/i,
   /^(no\.?|number)\s*\d/i,
+  // A single building is not a service area. These are the suffixes Google
+  // returns for one in an Indian city.
+  /\b(residency|apartments?|towers?|duplex|villa|bungalow|plaza|arcade|complex|society|enclave|heights|greens|palms|county|countywalk)\b/i,
 ];
 
 /**
@@ -97,9 +109,25 @@ function isPlausiblePlace(candidate: string): boolean {
  * `isPlausiblePlace`, because "no name" is a better outcome for an admin
  * reviewing a list than a plot number that looks like a decision.
  */
-export function pickAreaName(geocoded: ReverseGeocodeResult): string | null {
+export function pickAreaName(
+  geocoded: ReverseGeocodeResult,
+  cityName?: string,
+): string | null {
+  /**
+   * The city's own name is the one plausible-looking answer that is always
+   * wrong here. Google returns "Indore" for any cell it cannot resolve more
+   * finely, so a grid ends up with "Indore", "Indore 2", "Indore 3" — names
+   * that pass every other check and identify nothing inside Indore.
+   */
+  const isTheCityItself = (value: string): boolean =>
+    cityName !== undefined &&
+    value.trim().toLowerCase() === cityName.trim().toLowerCase();
+
+  const usable = (value: string): boolean =>
+    isPlausiblePlace(value) && !isTheCityItself(value);
+
   for (const candidate of geocoded.localityCandidates ?? []) {
-    if (isPlausiblePlace(candidate)) return tidyAreaName(candidate);
+    if (usable(candidate)) return tidyAreaName(candidate);
   }
 
   // Nominatim's shape, and the last resort for a Google result with no
@@ -111,7 +139,7 @@ export function pickAreaName(geocoded: ReverseGeocodeResult): string | null {
     ?.split(',')[0]
     ?.replace(PLUS_CODE, '')
     .trim();
-  if (first && isPlausiblePlace(first)) return tidyAreaName(first);
+  if (first && usable(first)) return tidyAreaName(first);
 
   return null;
 }

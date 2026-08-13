@@ -124,10 +124,18 @@ export class AreaNamingService {
   }
 
   private async run(cityId: string): Promise<void> {
-    const cells = await this.prisma.area.findMany({
-      where: { cityId, nameSource: 'generated' },
-      orderBy: { gridRef: 'asc' },
-    });
+    const [cells, city] = await Promise.all([
+      this.prisma.area.findMany({
+        where: { cityId, nameSource: 'generated' },
+        orderBy: { gridRef: 'asc' },
+      }),
+      // Passed to the namer so it can refuse the city's own name — the answer
+      // Google falls back to for any cell it cannot resolve more finely.
+      this.prisma.city.findUnique({
+        where: { id: cityId },
+        select: { name: true },
+      }),
+    ]);
 
     this.logger.log(
       `Naming ${cells.length} generated cells in city ${cityId}. ` +
@@ -145,7 +153,7 @@ export class AreaNamingService {
           centre.lat,
           centre.lng,
         );
-        const suggestion = pickAreaName(geocoded);
+        const suggestion = pickAreaName(geocoded, city?.name);
         if (!suggestion) {
           failed += 1;
           continue;
