@@ -23,6 +23,7 @@ import { ActorTypeGuard } from '../identity/guards/actor-type.guard';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { CreateBankAccountDto } from './dto/create-bank-account.dto';
 import { IngestLocationDto } from './dto/ingest-location.dto';
+import { ProLocationDto } from './dto/pro-location.dto';
 import { HistoryQueryDto } from './dto/history-query.dto';
 import { KycUploadUrlResponseDto } from './dto/kyc-upload-url-response.dto';
 import { ProApplicationDto } from './dto/pro-application.dto';
@@ -111,7 +112,7 @@ export class ProsController {
   @Get('jobs')
   @AllowSuspendedProRead()
   @ApiOperation({ summary: 'My paginated job history' })
-  @ApiOkEnvelope()
+  @ApiOkEnvelope(ProLocationDto)
   jobs(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: HistoryQueryDto,
@@ -172,8 +173,8 @@ export class ProsController {
   async ingestLocation(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: IngestLocationDto,
-  ): Promise<void> {
-    await this.prosService.ingestLocation(user.id, dto);
+  ): Promise<ProLocationDto> {
+    return this.prosService.ingestLocation(user.id, dto);
   }
 
   @Get('applications')

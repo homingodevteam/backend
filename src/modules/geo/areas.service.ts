@@ -1,12 +1,17 @@
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { apiError } from '../../common/utils';
-import type { Area, AreaService as AreaServiceRow } from '../../prisma/client';
+import {
+  Prisma,
+  type Area,
+  type AreaService as AreaServiceRow,
+} from '../../prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { AreaPostingDto, ProPostingDto } from './dto/area.dto';
 import {
   GEOCODER,
   type CityBounds,
   type GeocoderPort,
+  type ReverseGeocodeResult,
 } from '../../geocoding/geocoding.types';
 import { pickAreaName } from './area-name';
 import {
@@ -63,6 +68,12 @@ export class AreasService {
       );
     }
 
+    // A hand-drawn zone is a completed admin decision, not a generated cell
+    // waiting for the background naming workflow. Resolve its centre before
+    // writing anything so a successful create can never leave an addressless
+    // manual zone behind.
+    const geocoded = await this.reverseGeocodeBounds(input);
+
     return this.prisma.area.create({
       data: {
         cityId: input.cityId,
@@ -71,6 +82,7 @@ export class AreasService {
         maxLat: input.maxLat,
         minLng: input.minLng,
         maxLng: input.maxLng,
+        ...this.addressData(geocoded),
       },
     });
   }
@@ -122,8 +134,12 @@ export class AreasService {
       );
     }
 
+    // Resolve the entire payload before starting the transaction. A provider
+    // failure therefore creates zero zones rather than a partly-addressed set.
+    const geocoded = await this.reverseGeocodeBoundsInOrder(areas);
+
     return this.prisma.$transaction(
-      areas.map((area) =>
+      areas.map((area, index) =>
         this.prisma.area.create({
           data: {
             cityId,
@@ -132,6 +148,7 @@ export class AreasService {
             maxLat: area.maxLat,
             minLng: area.minLng,
             maxLng: area.maxLng,
+            ...this.addressData(geocoded[index]),
           },
         }),
       ),
@@ -260,9 +277,46 @@ export class AreasService {
     // "unreviewed" forever.
     const renamed = input.name !== undefined;
 
+    if (renamed && input.name !== area.name) {
+      const duplicate = await this.prisma.area.findFirst({
+        where: { cityId: area.cityId, name: input.name, id: { not: id } },
+        select: { id: true },
+      });
+      if (duplicate) {
+        throw apiError(
+          `This city already has an area called ${input.name}`,
+          HttpStatus.CONFLICT,
+          [
+            {
+              field: 'name',
+              message: 'Already exists',
+              code: 'AREA_NAME_TAKEN',
+            },
+          ],
+        );
+      }
+    }
+
     return this.prisma.area.update({
       where: { id },
-      data: { ...input, ...(renamed ? { nameSource: 'manual' } : {}) },
+      data: {
+        ...input,
+        ...(renamed ? { nameSource: 'manual' } : {}),
+        // The persisted address describes the centre of these bounds. Never
+        // expose it as current after an admin moves the rectangle; the admin
+        // must refresh it (and the enforcement readiness check will remain
+        // false) before the booking gate can be enabled again.
+        ...(movesBounds
+          ? {
+              addressLine: null,
+              addressState: null,
+              addressPostalCode: null,
+              addressProvider: null,
+              addressAttribution: null,
+              addressUpdatedAt: null,
+            }
+          : {}),
+      },
     });
   }
 
@@ -277,6 +331,18 @@ export class AreasService {
     const area = await this.prisma.area.findUnique({ where: { id } });
     if (!area) throw apiError('Area not found', HttpStatus.NOT_FOUND);
     return area;
+  }
+
+  /** Refresh persisted display metadata from the current centre coordinate. */
+  async refreshAddress(id: string): Promise<Area> {
+    const area = await this.findByIdOrFail(id);
+    const centre = boxCenter(area);
+    const geocoded = await this.geocoder.reverseGeocode(centre.lat, centre.lng);
+
+    return this.prisma.area.update({
+      where: { id },
+      data: this.addressData(geocoded),
+    });
   }
 
   /**
@@ -335,9 +401,14 @@ export class AreasService {
     const centre = boxCenter(area);
     const lat = Number(centre.lat.toFixed(6));
     const lng = Number(centre.lng.toFixed(6));
+    const addressStatus: 'pending' | 'resolved' =
+      area.addressLine && area.addressProvider && area.addressUpdatedAt
+        ? 'resolved'
+        : 'pending';
 
     return {
       ...area,
+      addressStatus,
       ...boxDimensionsKm(area),
       centerLat: lat,
       centerLng: lng,
@@ -498,13 +569,6 @@ export class AreasService {
     await this.assertCityExists(input.cityId);
     assertValidBounds(input.box);
 
-    const existing = await this.prisma.area.findMany({
-      where: { cityId: input.cityId },
-      include: { _count: { select: { bookings: true } } },
-    });
-
-    const disposable = existing.filter((area) => area._count.bookings === 0);
-    const historic = existing.filter((area) => area._count.bookings > 0);
     const stamp = new Date().toISOString().slice(0, 10);
 
     const cells = generateGridForBounds({
@@ -512,33 +576,91 @@ export class AreasService {
       cellSizeKm: input.cellSizeKm,
     });
 
-    await this.prisma.$transaction(async (tx) => {
-      // Renamed before anything is created, so the new grid's A1 cannot
-      // collide with an old A1 being kept for its bookings.
-      for (const area of historic) {
-        await tx.area.update({
-          where: { id: area.id },
-          data: { isActive: false, name: `${area.name} (retired ${stamp})` },
-        });
-      }
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        // Serialise all map replacements for one city. Without this row lock,
+        // two admins can both read the same old grid and race to create A1.
+        await tx.$queryRaw(
+          Prisma.sql`SELECT id FROM "cities" WHERE id = ${input.cityId}::uuid FOR UPDATE`,
+        );
 
-      if (disposable.length > 0) {
-        await tx.area.deleteMany({
-          where: { id: { in: disposable.map((area) => area.id) } },
+        const enforcement = await tx.platformSetting.findFirst({
+          where: {
+            key: 'geo.enforceAreaServiceAvailability',
+            cityId: input.cityId,
+          },
         });
-      }
-    });
+        if (enforcement?.value === 'true') {
+          throw apiError(
+            'Disable booking area enforcement before replacing this city map',
+            HttpStatus.CONFLICT,
+            [
+              {
+                field: 'cityId',
+                message:
+                  'A replacement grid starts unconfigured; leaving enforcement on would reject every booking',
+                code: 'AREA_ENFORCEMENT_ENABLED',
+              },
+            ],
+          );
+        }
 
-    this.logger.warn(
-      `Regenerating city ${input.cityId}: deleted ${disposable.length} unused areas, ` +
-        `retired ${historic.length} with booking history, creating ${cells.length} new cells.`,
+        const existing = await tx.area.findMany({
+          where: { cityId: input.cityId },
+          include: { _count: { select: { bookings: true } } },
+        });
+        const disposable = existing.filter(
+          (area) => area._count.bookings === 0,
+        );
+        const historic = existing.filter((area) => area._count.bookings > 0);
+
+        // Renamed before anything is created, so the new grid's A1 cannot
+        // collide with an old A1 being kept for its bookings.
+        for (const area of historic) {
+          await tx.area.update({
+            where: { id: area.id },
+            data: { isActive: false, name: `${area.name} (retired ${stamp})` },
+          });
+        }
+
+        if (disposable.length > 0) {
+          await tx.area.deleteMany({
+            where: { id: { in: disposable.map((area) => area.id) } },
+          });
+        }
+
+        const replacements: Area[] = [];
+        for (const cell of cells) {
+          replacements.push(
+            await tx.area.create({
+              data: {
+                cityId: input.cityId,
+                name: cell.name,
+                gridRef: cell.name,
+                nameSource: 'generated',
+                minLat: cell.minLat,
+                maxLat: cell.maxLat,
+                minLng: cell.minLng,
+                maxLng: cell.maxLng,
+              },
+            }),
+          );
+        }
+        return {
+          retired: historic.length,
+          deleted: disposable.length,
+          created: replacements,
+        };
+      },
+      { timeout: 30_000 },
     );
 
-    return {
-      retired: historic.length,
-      deleted: disposable.length,
-      created: await this.persistCells(input.cityId, cells),
-    };
+    this.logger.warn(
+      `Regenerating city ${input.cityId}: deleted ${result.deleted} unused areas, ` +
+        `retired ${result.retired} with booking history, creating ${cells.length} new cells.`,
+    );
+
+    return result;
   }
 
   /**
@@ -638,6 +760,39 @@ export class AreasService {
         }),
       ),
     );
+  }
+
+  private addressData(geocoded: ReverseGeocodeResult) {
+    return {
+      addressLine: geocoded.addressLine,
+      addressState: geocoded.stateName,
+      addressPostalCode: geocoded.postalCode,
+      addressProvider: geocoded.provider,
+      addressAttribution: geocoded.attribution,
+      addressUpdatedAt: new Date(),
+    };
+  }
+
+  private reverseGeocodeBounds(
+    bounds: BoundingBox,
+  ): Promise<ReverseGeocodeResult> {
+    const centre = boxCenter(bounds);
+    return this.geocoder.reverseGeocode(centre.lat, centre.lng);
+  }
+
+  private async reverseGeocodeBoundsInOrder(
+    areas: BoundingBox[],
+  ): Promise<ReverseGeocodeResult[]> {
+    const results: ReverseGeocodeResult[] = [];
+    for (let index = 0; index < areas.length; index += 1) {
+      results.push(await this.reverseGeocodeBounds(areas[index]));
+      if (index < areas.length - 1 && this.geocoder.minIntervalMs > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.geocoder.minIntervalMs),
+        );
+      }
+    }
+    return results;
   }
 
   private async assertCityExists(cityId: string): Promise<void> {
@@ -936,19 +1091,132 @@ export class AreasService {
    * for this anywhere, for the same reason there is no accept/decline.
    */
   async setProArea(proId: string, areaId: string, isActive: boolean) {
-    await this.findByIdOrFail(areaId);
+    const area = await this.findByIdOrFail(areaId);
 
     const pro = await this.prisma.pro.findUnique({
       where: { id: proId },
-      select: { id: true },
+      select: { id: true, cityId: true },
     });
     if (!pro) throw apiError('Pro not found', HttpStatus.NOT_FOUND);
+    if (!pro.cityId || pro.cityId !== area.cityId) {
+      throw apiError(
+        'A Professional can only be posted to a zone in their assigned city',
+        HttpStatus.CONFLICT,
+        [
+          {
+            field: 'proId',
+            message: 'Professional city and zone city must match',
+            code: 'PRO_AREA_CITY_MISMATCH',
+          },
+        ],
+      );
+    }
 
     return this.prisma.proArea.upsert({
       where: { proId_areaId: { proId, areaId } },
       update: { isActive },
       create: { proId, areaId, isActive },
     });
+  }
+
+  async enforcementStatus(cityId: string) {
+    await this.assertCityExists(cityId);
+    const [setting, areas] = await Promise.all([
+      this.prisma.platformSetting.findFirst({
+        where: {
+          key: 'geo.enforceAreaServiceAvailability',
+          cityId,
+        },
+      }),
+      this.prisma.area.findMany({
+        where: { cityId, isActive: true },
+        select: {
+          id: true,
+          name: true,
+          addressLine: true,
+          areaServices: {
+            where: { isActive: true },
+            select: { serviceId: true },
+          },
+        },
+      }),
+    ]);
+
+    const missingAddresses = areas
+      .filter((area) => !area.addressLine)
+      .map((area) => area.name);
+    const unconfiguredAreas = areas
+      .filter((area) => area.areaServices.length === 0)
+      .map((area) => area.name);
+    const unstaffed: { areaId: string; areaName: string; serviceId: string }[] =
+      [];
+    for (const area of areas) {
+      for (const assignment of area.areaServices) {
+        if (
+          (await this.countProsCapableInArea(area.id, assignment.serviceId)) ===
+          0
+        ) {
+          unstaffed.push({
+            areaId: area.id,
+            areaName: area.name,
+            serviceId: assignment.serviceId,
+          });
+        }
+      }
+    }
+
+    const ready =
+      areas.length > 0 &&
+      missingAddresses.length === 0 &&
+      unconfiguredAreas.length === 0 &&
+      unstaffed.length === 0;
+    return {
+      cityId,
+      enabled: setting?.value === 'true',
+      ready,
+      activeAreas: areas.length,
+      missingAddresses,
+      unconfiguredAreas,
+      unstaffed,
+    };
+  }
+
+  async setEnforcement(
+    cityId: string,
+    isEnabled: boolean,
+    updatedByAdminId: string,
+  ) {
+    const readiness = await this.enforcementStatus(cityId);
+    if (isEnabled && !readiness.ready) {
+      throw apiError(
+        'This city map is not ready for booking enforcement',
+        HttpStatus.CONFLICT,
+        [
+          {
+            field: 'cityId',
+            message:
+              'Every active zone needs an address, at least one service, and staffing for each enabled service',
+            code: 'AREA_ENFORCEMENT_NOT_READY',
+          },
+        ],
+      );
+    }
+
+    await this.prisma.platformSetting.upsert({
+      where: {
+        key_cityId: { key: 'geo.enforceAreaServiceAvailability', cityId },
+      },
+      update: { value: String(isEnabled), updatedByAdminId },
+      create: {
+        key: 'geo.enforceAreaServiceAvailability',
+        cityId,
+        value: String(isEnabled),
+        description: 'Reject bookings outside configured area-service coverage',
+        updatedByAdminId,
+      },
+    });
+
+    return { ...readiness, enabled: isEnabled };
   }
 
   listAreasForPro(proId: string) {

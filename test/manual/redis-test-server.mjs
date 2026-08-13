@@ -1,6 +1,7 @@
 import net from 'node:net';
 
 const port = Number(process.env.TEST_REDIS_PORT ?? 56379);
+const expiryScale = Number(process.env.TEST_REDIS_EXPIRY_SCALE ?? 1);
 const values = new Map();
 const expires = new Map();
 /** GEO members, keyed `${key}:${member}` → { longitude, latitude }. */
@@ -70,7 +71,8 @@ function execute(args) {
     if (nx && live(key)) return '$-1\r\n';
     values.set(key, args[2]);
     const ex = args.findIndex((arg) => arg.toLowerCase() === 'ex');
-    if (ex >= 0) expires.set(key, Date.now() + Number(args[ex + 1]) * 1000);
+    if (ex >= 0)
+      expires.set(key, Date.now() + Number(args[ex + 1]) * 1000 * expiryScale);
     return '+OK\r\n';
   }
   if (command === 'incr') {

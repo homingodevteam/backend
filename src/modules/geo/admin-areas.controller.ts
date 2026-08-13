@@ -4,6 +4,7 @@ import {
   Get,
   HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Put,
@@ -11,6 +12,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user.type';
 import {
   ApiCreatedEnvelope,
   ApiErrorEnvelope,
@@ -18,6 +21,8 @@ import {
 } from '../../common/swagger/api-envelope.decorator';
 import { PermissionCode } from '../identity/constants/permission-code';
 import { RequirePermissions } from '../identity/decorators/require-permissions.decorator';
+import { CityScopedResource } from '../identity/decorators/city-scoped-resource.decorator';
+import { CityScopeGuard } from '../identity/guards/city-scope.guard';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../identity/guards/permissions.guard';
 import { AreaNamingService } from './area-naming.service';
@@ -42,6 +47,7 @@ import {
   RegenerateResultDto,
   SetAreaServiceDto,
   SetAreaServicesDto,
+  SetAreaEnforcementDto,
   SetProAreaDto,
   SetServiceAcrossAreasDto,
   UpdateAreaDto,
@@ -57,7 +63,7 @@ import {
  */
 @ApiTags('Admin — Areas')
 @ApiBearerAuth('access-token')
-@UseGuards(JwtAuthGuard, PermissionsGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard, CityScopeGuard)
 @Controller('admin/areas')
 export class AdminAreasController {
   constructor(
@@ -403,7 +409,44 @@ export class AdminAreasController {
     return this.naming.progressFor(cityId);
   }
 
+  @Get('enforcement')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({ summary: 'Booking-gate readiness and status for a city map' })
+  @ApiOkEnvelope()
+  enforcement(@Query('cityId') cityId: string) {
+    return this.areas.enforcementStatus(cityId);
+  }
+
+  @Put('enforcement')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({
+    summary: 'Enable or disable area-service enforcement for bookings',
+    description:
+      'Enabling is refused until every active zone has a persisted address, ' +
+      'at least one enabled service, and an approved capable Pro posted for ' +
+      'each enabled service.',
+  })
+  @ApiOkEnvelope()
+  setEnforcement(
+    @Body() dto: SetAreaEnforcementDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.areas.setEnforcement(dto.cityId, dto.isEnabled, user.id);
+  }
+
+  @Post(':id/refresh-address')
+  @CityScopedResource('area')
+  @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
+  @ApiOperation({ summary: 'Refresh a zone centre address from the geocoder' })
+  @ApiCreatedEnvelope(AreaDto)
+  async refreshAddress(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<AreaDto> {
+    return this.areas.describe(await this.areas.refreshAddress(id));
+  }
+
   @Patch(':id')
+  @CityScopedResource('area')
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
   @ApiOperation({
     summary: 'Rename, re-bound or deactivate an area',
@@ -422,13 +465,14 @@ export class AdminAreasController {
     HttpStatus.NOT_FOUND,
   )
   async update(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
     @Body() dto: UpdateAreaDto,
   ): Promise<AreaDto> {
     return this.areas.describe(await this.areas.update(id, dto));
   }
 
   @Get(':id/overlaps')
+  @CityScopedResource('area')
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
   @ApiOperation({
     summary: 'Which neighbours this area genuinely overlaps',
@@ -445,7 +489,9 @@ export class AdminAreasController {
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  overlaps(@Param('id') id: string): Promise<AreaOverlapDto[]> {
+  overlaps(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<AreaOverlapDto[]> {
     return this.areas.overlapsFor(id);
   }
 
@@ -454,6 +500,7 @@ export class AdminAreasController {
   // ------------------------------------------------------------------
 
   @Get(':id/services')
+  @CityScopedResource('area')
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
   @ApiOperation({ summary: 'Services listed for this area' })
   @ApiOkEnvelope()
@@ -462,11 +509,12 @@ export class AdminAreasController {
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  services(@Param('id') id: string) {
+  services(@Param('id', new ParseUUIDPipe({ version: '4' })) id: string) {
     return this.areas.listServicesForArea(id);
   }
 
   @Post(':id/services')
+  @CityScopedResource('area')
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
   @ApiOperation({
     summary: 'Turn ONE service on or off in this area',
@@ -482,11 +530,15 @@ export class AdminAreasController {
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  setService(@Param('id') id: string, @Body() dto: SetAreaServiceDto) {
+  setService(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: SetAreaServiceDto,
+  ) {
     return this.areas.setServiceAvailability(id, dto.serviceId, dto.isActive);
   }
 
   @Put(':id/services')
+  @CityScopedResource('area')
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
   @ApiOperation({
     summary: 'Replace this area’s entire service list',
@@ -503,11 +555,15 @@ export class AdminAreasController {
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  setServices(@Param('id') id: string, @Body() dto: SetAreaServicesDto) {
+  setServices(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: SetAreaServicesDto,
+  ) {
     return this.areas.setServicesForArea(id, dto.serviceIds);
   }
 
   @Post(':id/services/copy')
+  @CityScopedResource('areaCopy')
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
   @ApiOperation({
     summary: 'Copy another area’s availability onto this one',
@@ -524,11 +580,15 @@ export class AdminAreasController {
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  copyServices(@Param('id') id: string, @Body() dto: CopyAreaServicesDto) {
+  copyServices(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: CopyAreaServicesDto,
+  ) {
     return this.areas.copyServicesBetweenAreas(dto.sourceAreaId, id);
   }
 
   @Post('by-service/:serviceId')
+  @CityScopedResource('areas')
   @RequirePermissions(PermissionCode.CATALOG_CITY_MANAGE)
   @ApiOperation({
     summary: 'Turn one service on or off across many areas',
@@ -545,7 +605,7 @@ export class AdminAreasController {
     HttpStatus.NOT_FOUND,
   )
   setAcrossAreas(
-    @Param('serviceId') serviceId: string,
+    @Param('serviceId', new ParseUUIDPipe({ version: '4' })) serviceId: string,
     @Body() dto: SetServiceAcrossAreasDto,
   ) {
     return this.areas.setServiceAcrossAreas(
@@ -560,6 +620,7 @@ export class AdminAreasController {
   // ------------------------------------------------------------------
 
   @Post(':id/pros')
+  @CityScopedResource('area')
   @RequirePermissions(PermissionCode.PRO_AVAILABILITY_SET)
   @ApiOperation({
     summary: 'Post a Pro to this area, or take them off it',
@@ -575,11 +636,15 @@ export class AdminAreasController {
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  setPro(@Param('id') id: string, @Body() dto: SetProAreaDto) {
+  setPro(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: SetProAreaDto,
+  ) {
     return this.areas.setProArea(dto.proId, id, dto.isActive);
   }
 
   @Get(':id/pros')
+  @CityScopedResource('area')
   @RequirePermissions(PermissionCode.PRO_AVAILABILITY_SET)
   @ApiOperation({
     summary: 'Pros posted to this area',
@@ -594,11 +659,14 @@ export class AdminAreasController {
     HttpStatus.FORBIDDEN,
     HttpStatus.NOT_FOUND,
   )
-  prosForArea(@Param('id') id: string): Promise<ProPostingDto[]> {
+  prosForArea(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<ProPostingDto[]> {
     return this.areas.prosForArea(id);
   }
 
   @Get('by-pro/:proId')
+  @CityScopedResource('proParam')
   @RequirePermissions(PermissionCode.PRO_AVAILABILITY_SET)
   @ApiOperation({
     summary: 'Where one Pro is posted',
@@ -608,7 +676,9 @@ export class AdminAreasController {
   })
   @ApiOkEnvelope(AreaPostingDto, { isArray: true })
   @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN)
-  areasForPro(@Param('proId') proId: string): Promise<AreaPostingDto[]> {
+  areasForPro(
+    @Param('proId', new ParseUUIDPipe({ version: '4' })) proId: string,
+  ): Promise<AreaPostingDto[]> {
     return this.areas.areasForPro(proId);
   }
 }

@@ -3,6 +3,7 @@ import {
   Get,
   HttpStatus,
   Param,
+  ParseUUIDPipe,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -159,7 +160,7 @@ export class GeoController {
   @ApiOkEnvelope(PublicAreaDto, { isArray: true })
   @ApiErrorEnvelope(HttpStatus.BAD_REQUEST)
   areasForService(
-    @Param('serviceId') serviceId: string,
+    @Param('serviceId', new ParseUUIDPipe({ version: '4' })) serviceId: string,
   ): Promise<PublicAreaDto[]> {
     return this.location.listAreasForService(serviceId);
   }

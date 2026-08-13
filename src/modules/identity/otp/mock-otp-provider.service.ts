@@ -33,7 +33,19 @@ export class MockOtpProvider implements OtpProvider {
       this.config.get<string>('OTP_TTL_SECONDS', '300'),
     );
 
-    const code = String(randomInt(0, 10 ** length)).padStart(length, '0');
+    const configuredCode = this.config.get<string>('MOCK_OTP_CODE')?.trim();
+    if (
+      configuredCode &&
+      !new RegExp(`^\\d{${length}}$`).test(configuredCode)
+    ) {
+      throw new Error(`MOCK_OTP_CODE must contain exactly ${length} digits`);
+    }
+    // Deterministic only when an isolated test explicitly asks for it. Normal
+    // local development keeps random one-time codes, and production cannot
+    // select the mock provider at all (enforced by slide.config).
+    const code =
+      configuredCode ??
+      String(randomInt(0, 10 ** length)).padStart(length, '0');
     const providerRef = randomUUID();
 
     await this.redis.set(

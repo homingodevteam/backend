@@ -179,6 +179,51 @@ describe('GoogleGeocoder', () => {
     expect(result.postalCode).toBeNull();
   });
 
+  it('builds a readable line from components when formatted_address is absent', async () => {
+    const redis = buildRedis();
+    respond({
+      status: 'OK',
+      results: [
+        {
+          address_components: [
+            {
+              long_name: 'Vijay Nagar',
+              short_name: 'Vijay Nagar',
+              types: ['sublocality'],
+            },
+            { long_name: 'Indore', short_name: 'Indore', types: ['locality'] },
+            {
+              long_name: 'Madhya Pradesh',
+              short_name: 'MP',
+              types: ['administrative_area_level_1'],
+            },
+            {
+              long_name: '452010',
+              short_name: '452010',
+              types: ['postal_code'],
+            },
+          ],
+        },
+      ],
+    });
+
+    await expect(
+      build(redis).reverseGeocode(22.7533, 75.8937),
+    ).resolves.toMatchObject({
+      addressLine: 'Vijay Nagar, Indore, Madhya Pradesh, 452010',
+      provider: 'google',
+    });
+  });
+
+  it('never returns an empty human-readable address', async () => {
+    const redis = buildRedis();
+    respond({ status: 'OK', results: [{}] });
+
+    await expect(
+      build(redis).reverseGeocode(22.7533, 75.8937),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
   /** A paid quota, so a bulk caller need not pace itself at all. */
   it('declares no politeness interval', () => {
     expect(build(buildRedis()).minIntervalMs).toBe(0);

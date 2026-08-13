@@ -37,6 +37,18 @@ function buildService(deps: ReturnType<typeof buildDeps>): ProsService {
     deps.prisma as never,
     deps.redis as never,
     { revokeAllSessions: jest.fn() } as never,
+    {
+      resolve: jest.fn().mockResolvedValue({
+        lat: 22.72,
+        lng: 75.86,
+        addressLine: 'Palasia, Indore, Madhya Pradesh, India',
+        stateName: 'Madhya Pradesh',
+        postalCode: '452001',
+        provider: 'nominatim',
+        attribution: 'test',
+        area: null,
+      }),
+    },
   );
 }
 
@@ -313,7 +325,9 @@ describe('ProsService', () => {
 
       await expect(
         service.ingestLocation('p1', { lat: 12.9, lng: 77.6 }),
-      ).resolves.toBeUndefined();
+      ).resolves.toMatchObject({
+        addressLine: 'Palasia, Indore, Madhya Pradesh, India',
+      });
       expect(deps.prisma.pro.update).toHaveBeenCalled();
     });
   });

@@ -192,7 +192,13 @@ export class GoogleGeocoder implements GeocoderPort {
       );
     }
 
-    const best = body.results[0];
+    // Google normally supplies `formatted_address` on every result, but the
+    // contract allows result shapes to vary by address type and region. Pick
+    // the first actually displayable result instead of blindly accepting an
+    // empty first entry.
+    const best =
+      body.results.find((result) => result.formatted_address?.trim()) ??
+      body.results[0];
     const components = best.address_components ?? [];
 
     const named = (type: string): string | undefined =>
@@ -225,8 +231,24 @@ export class GoogleGeocoder implements GeocoderPort {
       named('locality'),
     ].filter((value): value is string => !!value);
 
+    const addressLine =
+      best.formatted_address?.trim() ||
+      [
+        ...new Set(
+          components
+            .map((component) => component.long_name.trim())
+            .filter(Boolean),
+        ),
+      ].join(', ');
+
+    if (!addressLine) {
+      throw new UnprocessableEntityException(
+        'No human-readable address could be resolved for this pin',
+      );
+    }
+
     return {
-      addressLine: best.formatted_address ?? '',
+      addressLine,
       cityCandidates: [...new Set(cityCandidates)],
       localityCandidates: [...new Set(localityCandidates)],
       stateName: named('administrative_area_level_1') ?? null,

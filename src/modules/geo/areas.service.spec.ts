@@ -10,7 +10,9 @@ function buildDeps() {
     },
     $transaction: jest.fn(),
     pro: {
-      findUnique: jest.fn().mockResolvedValue({ id: 'pro-1' }),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ id: 'pro-1', cityId: 'city-indore' }),
       // Staffed by default, so the cases that are not about the gate are not
       // about the gate.
       count: jest.fn().mockResolvedValue(3),
@@ -25,12 +27,21 @@ function buildDeps() {
     },
     areaService: { upsert: jest.fn(), findMany: jest.fn() },
     proArea: { upsert: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+    platformSetting: { findFirst: jest.fn(), upsert: jest.fn() },
   };
   // Only the city-opening paths reach the geocoder; everything else here
   // never touches it.
   const geocoder = {
     minIntervalMs: 0,
-    reverseGeocode: jest.fn(),
+    reverseGeocode: jest.fn().mockResolvedValue({
+      addressLine: 'Vijay Nagar, Indore, Madhya Pradesh 452010, India',
+      cityCandidates: ['Indore'],
+      localityCandidates: ['Vijay Nagar'],
+      stateName: 'Madhya Pradesh',
+      postalCode: '452010',
+      provider: 'nominatim',
+      attribution: 'OpenStreetMap test',
+    }),
     geocodeCity: jest.fn(),
   };
   return { prisma, geocoder };
@@ -88,9 +99,19 @@ describe('AreasService · create', () => {
           maxLat: 22.768,
           minLng: 75.858,
           maxLng: 75.916,
+          addressLine: 'Vijay Nagar, Indore, Madhya Pradesh 452010, India',
+          addressProvider: 'nominatim',
         }),
       }),
     );
+  });
+
+  it('does not create a manual zone when its centre address cannot resolve', async () => {
+    const deps = buildDeps();
+    deps.geocoder.reverseGeocode.mockRejectedValue(new Error('provider down'));
+
+    await expect(build(deps).create(input)).rejects.toThrow('provider down');
+    expect(deps.prisma.area.create).not.toHaveBeenCalled();
   });
 
   /** Swapping min and max should read as a sentence, not a constraint error. */
@@ -136,6 +157,96 @@ describe('AreasService · create', () => {
     deps.prisma.area.findFirst.mockResolvedValue({ id: 'existing' });
 
     expect(await statusOf(build(deps).create(input))).toBe(409);
+  });
+});
+
+describe('AreasService · persisted zone addresses', () => {
+  it('reverse-geocodes the centre and stores provider metadata', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(anArea());
+    deps.geocoder.reverseGeocode.mockResolvedValue({
+      addressLine: 'Vijay Nagar, Indore, Madhya Pradesh 452010, India',
+      cityCandidates: ['Indore'],
+      localityCandidates: ['Vijay Nagar'],
+      stateName: 'Madhya Pradesh',
+      postalCode: '452010',
+      provider: 'nominatim',
+      attribution: 'OpenStreetMap test',
+    });
+    deps.prisma.area.update.mockResolvedValue(anArea());
+
+    await build(deps).refreshAddress('area-vn');
+
+    expect(deps.geocoder.reverseGeocode).toHaveBeenCalledWith(22.741, 75.887);
+    expect(deps.prisma.area.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          addressLine: 'Vijay Nagar, Indore, Madhya Pradesh 452010, India',
+          addressPostalCode: '452010',
+          addressProvider: 'nominatim',
+        }),
+      }),
+    );
+  });
+});
+
+describe('AreasService · Pro city boundary', () => {
+  it('rejects posting a Professional into a zone from another city', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(anArea());
+    deps.prisma.pro.findUnique.mockResolvedValue({
+      id: 'pro-bhopal',
+      cityId: 'city-bhopal',
+    });
+
+    expect(
+      await statusOf(build(deps).setProArea('pro-bhopal', 'area-vn', true)),
+    ).toBe(409);
+    expect(deps.prisma.proArea.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('AreasService · booking enforcement readiness', () => {
+  it('enables the city gate only after address, service and staffing checks', async () => {
+    const deps = buildDeps();
+    deps.prisma.platformSetting.findFirst.mockResolvedValue(null);
+    deps.prisma.area.findMany.mockResolvedValue([
+      {
+        id: 'area-vn',
+        name: 'Vijay Nagar',
+        addressLine: 'Vijay Nagar, Indore, Madhya Pradesh, India',
+        areaServices: [{ serviceId: 'svc-1' }],
+      },
+    ]);
+
+    await expect(
+      build(deps).setEnforcement('city-indore', true, 'admin-1'),
+    ).resolves.toMatchObject({ enabled: true, ready: true });
+    expect(deps.prisma.platformSetting.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ value: 'true' }),
+      }),
+    );
+  });
+
+  it('refuses enforcement when an active zone has no persisted address', async () => {
+    const deps = buildDeps();
+    deps.prisma.platformSetting.findFirst.mockResolvedValue(null);
+    deps.prisma.area.findMany.mockResolvedValue([
+      {
+        id: 'area-vn',
+        name: 'Vijay Nagar',
+        addressLine: null,
+        areaServices: [{ serviceId: 'svc-1' }],
+      },
+    ]);
+
+    expect(
+      await statusOf(
+        build(deps).setEnforcement('city-indore', true, 'admin-1'),
+      ),
+    ).toBe(409);
+    expect(deps.prisma.platformSetting.upsert).not.toHaveBeenCalled();
   });
 });
 
@@ -233,6 +344,30 @@ describe('AreasService · update · reviewing a name', () => {
       unknown
     >;
     expect(data.nameSource).toBeUndefined();
+  });
+
+  it('clears the persisted centre address when bounds move', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findUnique.mockResolvedValue(
+      anArea({
+        addressLine: 'Vijay Nagar, Indore, Madhya Pradesh 452010, India',
+        addressProvider: 'nominatim',
+      }),
+    );
+    deps.prisma.area.update.mockResolvedValue(anArea());
+
+    await build(deps).update('area-vn', { maxLat: 22.75 });
+
+    expect(deps.prisma.area.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          maxLat: 22.75,
+          addressLine: null,
+          addressProvider: null,
+          addressUpdatedAt: null,
+        }),
+      }),
+    );
   });
 });
 

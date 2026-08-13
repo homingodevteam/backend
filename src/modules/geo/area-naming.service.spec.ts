@@ -138,7 +138,11 @@ describe('AreaNamingService · the naming pass', () => {
 
     expect(deps.prisma.area.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { name: 'Vijay Nagar', nameSource: 'geocoded' },
+        data: expect.objectContaining({
+          name: 'Vijay Nagar',
+          nameSource: 'geocoded',
+          addressLine: 'Vijay Nagar, Indore, Madhya Pradesh, India',
+        }),
       }),
     );
   });
@@ -229,7 +233,17 @@ describe('AreaNamingService · the naming pass', () => {
     await build(deps).start('city-indore');
     await settle();
 
-    expect(deps.prisma.area.updateMany).not.toHaveBeenCalled();
+    expect(deps.prisma.area.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          addressLine: '42, Indore, Madhya Pradesh, India',
+        }),
+      }),
+    );
+    const update = deps.prisma.area.updateMany.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(update.data).not.toHaveProperty('name');
   });
 });
 

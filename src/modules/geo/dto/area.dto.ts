@@ -226,6 +226,16 @@ export class SetProAreaDto {
   isActive: boolean;
 }
 
+export class SetAreaEnforcementDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  cityId: string;
+
+  @ApiProperty()
+  @IsBoolean()
+  isEnabled: boolean;
+}
+
 /** Query for the customer-facing serviceability check. */
 export class ResolveLocationQueryDto {
   @ApiProperty({ example: 22.7533 })
@@ -295,6 +305,36 @@ export class AreaDto {
       'and only `generated` rows are ever overwritten by the naming pass.',
   })
   nameSource: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 'Vijay Nagar, Indore, Madhya Pradesh 452010, India',
+  })
+  addressLine: string | null;
+
+  @ApiPropertyOptional({ nullable: true, example: 'Madhya Pradesh' })
+  addressState: string | null;
+
+  @ApiPropertyOptional({ nullable: true, example: '452010' })
+  addressPostalCode: string | null;
+
+  @ApiPropertyOptional({ nullable: true, enum: ['nominatim', 'google'] })
+  addressProvider: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  addressAttribution: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  addressUpdatedAt: Date | null;
+
+  @ApiProperty({
+    enum: ['pending', 'resolved'],
+    description:
+      '`pending` is only valid while a generated grid is awaiting its ' +
+      'background naming/geocoding pass. Manual zones are resolved before ' +
+      'their create request succeeds.',
+  })
+  addressStatus: 'pending' | 'resolved';
 
   @ApiProperty({ example: 22.7553, description: 'Derived from the bounds.' })
   centerLat: number;

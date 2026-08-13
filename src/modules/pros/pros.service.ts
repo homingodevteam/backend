@@ -10,10 +10,16 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { TRACKING_CHANNEL } from '../../redis/channels';
 import { RedisService } from '../../redis/redis.service';
 import { TokenService } from '../identity/services/token.service';
+import { Inject } from '@nestjs/common';
 import { AdminUpdateProProfileDto } from './dto/admin-update-pro-profile.dto';
 import { IngestLocationDto } from './dto/ingest-location.dto';
 import { SuspendProDto } from './dto/suspend-pro.dto';
 import { UpdateProDto } from './dto/update-pro.dto';
+import {
+  PRO_LOCATION_RESOLVER_PORT,
+  type ProLocationResolverPort,
+  type ProResolvedLocation,
+} from './ports/pro-location-resolver.port';
 
 const PRO_LIVE_GEO_KEY = 'pros:live';
 
@@ -25,6 +31,8 @@ export class ProsService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly tokenService: TokenService,
+    @Inject(PRO_LOCATION_RESOLVER_PORT)
+    private readonly locationResolver: ProLocationResolverPort,
   ) {}
 
   async getById(id: string): Promise<Pro> {
@@ -87,7 +95,10 @@ export class ProsService {
    * immediate cold flush to Pro.lastKnownLat/Lng — simplest correct version
    * of "periodic cold flush" until a real background job exists.
    */
-  async ingestLocation(id: string, dto: IngestLocationDto): Promise<void> {
+  async ingestLocation(
+    id: string,
+    dto: IngestLocationDto,
+  ): Promise<ProResolvedLocation> {
     const pro = await this.getById(id);
     if (pro.status !== 'approved' || !pro.isAvailable) {
       throw apiError(
@@ -120,6 +131,7 @@ export class ProsService {
         lastLocationAt: new Date(),
       },
     });
+    return this.locationResolver.resolve(dto.lat, dto.lng);
   }
 
   async findMany(

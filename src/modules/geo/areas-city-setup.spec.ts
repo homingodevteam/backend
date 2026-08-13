@@ -12,7 +12,10 @@ const CITY = 'city-1';
 
 function buildDeps() {
   const tx = {
+    $queryRaw: jest.fn().mockResolvedValue([{ id: CITY }]),
+    platformSetting: { findFirst: jest.fn().mockResolvedValue(null) },
     area: {
+      findMany: jest.fn(),
       update: jest.fn().mockResolvedValue({}),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       create: jest.fn(),
@@ -33,6 +36,8 @@ function buildDeps() {
         : Promise.resolve(arg),
     ),
   };
+
+  tx.area.findMany.mockImplementation((args) => prisma.area.findMany(args));
 
   const geocoder = {
     minIntervalMs: 0,
@@ -291,7 +296,7 @@ describe('regenerate', () => {
     });
 
     const renameOrder = deps.tx.area.update.mock.invocationCallOrder[0];
-    const createOrder = deps.prisma.area.create.mock.invocationCallOrder[0];
+    const createOrder = deps.tx.area.create.mock.invocationCallOrder[0];
     expect(renameOrder).toBeLessThan(createOrder);
   });
 
@@ -323,6 +328,23 @@ describe('regenerate', () => {
     });
 
     expect(result).toMatchObject({ retired: 0, deleted: 0 });
-    expect(deps.prisma.area.create).toHaveBeenCalled();
+    expect(deps.tx.area.create).toHaveBeenCalled();
+  });
+
+  it('creates replacement cells through the same transaction client', async () => {
+    const deps = buildDeps();
+    deps.prisma.area.findMany.mockResolvedValue([
+      anArea('A1', 22.72, 75.85, 0),
+    ]);
+
+    await build(deps).regenerate({
+      cityId: CITY,
+      box: INDORE,
+      cellSizeKm: 10,
+    });
+
+    expect(deps.tx.area.deleteMany).toHaveBeenCalled();
+    expect(deps.tx.area.create).toHaveBeenCalled();
+    expect(deps.prisma.area.create).not.toHaveBeenCalled();
   });
 });

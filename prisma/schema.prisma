@@ -82,6 +82,16 @@ model Area {
   /// cells are still unreviewed placeholders.
   nameSource String @default("manual")
 
+  /// Reverse-geocoded address of the cell centre. Coordinates and bounds stay
+  /// authoritative; this is persisted display/audit metadata so an admin can
+  /// review a zone without another provider request every time.
+  addressLine        String?
+  addressState       String?
+  addressPostalCode  String?
+  addressProvider    String?
+  addressAttribution String?
+  addressUpdatedAt   DateTime?
+
   /// Half-open on both axes: a point belongs when
   /// `minLat <= lat < maxLat AND minLng <= lng < maxLng`.
   minLat Float

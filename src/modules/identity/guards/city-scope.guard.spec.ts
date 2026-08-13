@@ -14,6 +14,7 @@ describe('CityScopeGuard', () => {
     pro: { findUnique: jest.fn(), findMany: jest.fn() },
     proApplication: { findUnique: jest.fn() },
     customerAddress: { findMany: jest.fn() },
+    area: { findUnique: jest.fn(), findMany: jest.fn() },
   };
 
   beforeEach(() => jest.clearAllMocks());
@@ -61,6 +62,43 @@ describe('CityScopeGuard', () => {
           params: {},
           query: {},
           body: { proIds: ['p1', 'p2'] },
+        }),
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('rejects an area resource outside the admin city scope', async () => {
+    const reflector = { getAllAndOverride: jest.fn().mockReturnValue('area') };
+    prisma.area.findUnique.mockResolvedValue({ cityId: 'bhopal' });
+    const guard = new CityScopeGuard(prisma as never, reflector as never);
+
+    await expect(
+      guard.canActivate(
+        context({
+          user: { actorType: 'admin', cityScope: ['indore'] },
+          params: { id: 'bhopal-area' },
+          query: {},
+          body: {},
+        }),
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('checks every area in a bulk service update', async () => {
+    const reflector = { getAllAndOverride: jest.fn().mockReturnValue('areas') };
+    prisma.area.findMany.mockResolvedValue([
+      { id: 'a1', cityId: 'indore' },
+      { id: 'a2', cityId: 'bhopal' },
+    ]);
+    const guard = new CityScopeGuard(prisma as never, reflector as never);
+
+    await expect(
+      guard.canActivate(
+        context({
+          user: { actorType: 'admin', cityScope: ['indore'] },
+          params: {},
+          query: {},
+          body: { areaIds: ['a1', 'a2'] },
         }),
       ),
     ).rejects.toThrow(ForbiddenException);

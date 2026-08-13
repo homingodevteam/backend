@@ -17,6 +17,10 @@ import {
   NoOpTrainingGateService,
   TRAINING_GATE_PORT,
 } from './ports/training-gate.port';
+import {
+  PRO_LOCATION_RESOLVER_PORT,
+  ProLocationResolverDelegate,
+} from './ports/pro-location-resolver.port';
 
 @Module({
   // CatalogModule: a Pro can only be assigned a service that exists in the
@@ -41,12 +45,22 @@ import {
     ProCountersService,
     ProStandingService,
     ProProfilePhotoService,
+    ProLocationResolverDelegate,
+    {
+      provide: PRO_LOCATION_RESOLVER_PORT,
+      useExisting: ProLocationResolverDelegate,
+    },
     // Module 10's activation gate. Registered into by TrainingModule at boot;
     // permissive until then, because refusing every activation when training
     // is absent would be an outage rather than a control.
     NoOpTrainingGateService,
     { provide: TRAINING_GATE_PORT, useExisting: NoOpTrainingGateService },
   ],
-  exports: [ProCountersService, ProsService, TRAINING_GATE_PORT],
+  exports: [
+    ProCountersService,
+    ProsService,
+    TRAINING_GATE_PORT,
+    PRO_LOCATION_RESOLVER_PORT,
+  ],
 })
 export class ProsModule {}

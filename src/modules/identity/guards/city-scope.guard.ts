@@ -54,6 +54,38 @@ export class CityScopeGuard implements CanActivate {
     resource: CityResource,
     request: { params: Record<string, string>; body: Record<string, unknown> },
   ): Promise<string[]> {
+    if (resource === 'area') {
+      const row = await this.prisma.area.findUnique({
+        where: { id: request.params.id },
+        select: { cityId: true },
+      });
+      return row ? [row.cityId] : [];
+    }
+    if (resource === 'areaCopy') {
+      const sourceAreaId = request.body.sourceAreaId as string;
+      const rows = await this.prisma.area.findMany({
+        where: { id: { in: [request.params.id, sourceAreaId] } },
+        select: { cityId: true },
+      });
+      return rows.length === 2 ? rows.map((row) => row.cityId) : [];
+    }
+    if (resource === 'areas') {
+      const areaIds = request.body.areaIds as string[];
+      const rows = await this.prisma.area.findMany({
+        where: { id: { in: areaIds } },
+        select: { id: true, cityId: true },
+      });
+      return rows.length === areaIds.length
+        ? rows.map((row) => row.cityId)
+        : [];
+    }
+    if (resource === 'proParam') {
+      const row = await this.prisma.pro.findUnique({
+        where: { id: request.params.proId },
+        select: { cityId: true },
+      });
+      return row?.cityId ? [row.cityId] : [];
+    }
     if (resource === 'pro') {
       const row = await this.prisma.pro.findUnique({
         where: { id: request.params.id },

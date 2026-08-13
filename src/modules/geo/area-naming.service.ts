@@ -155,6 +155,17 @@ export class AreaNamingService {
         );
         const suggestion = pickAreaName(geocoded, city?.name);
         if (!suggestion) {
+          await this.prisma.area.updateMany({
+            where: { id: cell.id, nameSource: 'generated' },
+            data: {
+              addressLine: geocoded.addressLine,
+              addressState: geocoded.stateName,
+              addressPostalCode: geocoded.postalCode,
+              addressProvider: geocoded.provider,
+              addressAttribution: geocoded.attribution,
+              addressUpdatedAt: new Date(),
+            },
+          });
           failed += 1;
           continue;
         }
@@ -166,6 +177,12 @@ export class AreaNamingService {
           data: {
             name: await this.deduplicate(cityId, suggestion, cell.id),
             nameSource: 'geocoded',
+            addressLine: geocoded.addressLine,
+            addressState: geocoded.stateName,
+            addressPostalCode: geocoded.postalCode,
+            addressProvider: geocoded.provider,
+            addressAttribution: geocoded.attribution,
+            addressUpdatedAt: new Date(),
           },
         });
         if (updated.count > 0) named += 1;

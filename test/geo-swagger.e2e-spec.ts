@@ -10,6 +10,7 @@ import { AreasService } from './../src/modules/geo/areas.service';
 import { GeoController } from './../src/modules/geo/geo.controller';
 import { LocationService } from './../src/modules/geo/location.service';
 import { JwtAuthGuard } from './../src/modules/identity/guards/jwt-auth.guard';
+import { CityScopeGuard } from './../src/modules/identity/guards/city-scope.guard';
 import { PermissionsGuard } from './../src/modules/identity/guards/permissions.guard';
 
 type Operation = {
@@ -57,6 +58,8 @@ describe('Geo Swagger contract (e2e)', () => {
       .overrideGuard(JwtAuthGuard)
       .useValue(allow)
       .overrideGuard(PermissionsGuard)
+      .useValue(allow)
+      .overrideGuard(CityScopeGuard)
       .useValue(allow)
       .compile();
 
