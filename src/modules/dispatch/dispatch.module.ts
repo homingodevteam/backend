@@ -11,6 +11,7 @@ import { PaymentsModule } from '../payments/payments.module';
 import { ProsModule } from '../pros/pros.module';
 import { AdminDispatchController } from './admin-dispatch.controller';
 import { DispatchScoringService } from './dispatch-scoring.service';
+import { DispatchScheduler } from './dispatch.scheduler';
 import { DispatchService } from './dispatch.service';
 import { ProDispatchController } from './pro-dispatch.controller';
 import { RealDispatchAdapter } from './real-dispatch.adapter';
@@ -52,6 +53,11 @@ import {
   controllers: [ProDispatchController, AdminDispatchController],
   providers: [
     DispatchService,
+    /*
+     * The worker that calls `drain()`. Without it the queue fills and nothing
+     * empties it — see the note at the top of `dispatch.scheduler`.
+     */
+    DispatchScheduler,
     DispatchScoringService,
     RealDispatchAdapter,
     { provide: TRAVEL_TIME_PORT, useClass: RoutedTravelTimeService },

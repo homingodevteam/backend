@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -17,6 +18,7 @@ import { GeoModule } from './modules/geo/geo.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ProsModule } from './modules/pros/pros.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
+import { SosModule } from './modules/sos/sos.module';
 import { TrainingModule } from './modules/training/training.module';
 
 // NODE_ENV picks the override file; `.env` is always the fallback beneath it.
@@ -31,6 +33,11 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
       cache: true,
       envFilePath: [`.env.${nodeEnv}`, '.env'],
     }),
+    /*
+     * Enables `@Cron` anywhere in the app. Nothing ran on a timer before this
+     * — dispatch queued work that only a manual admin call ever drained.
+     */
+    ScheduleModule.forRoot(),
     PrismaModule,
     GeocodingModule,
     // Global, like geocoding, and for the same reason: dispatch, bookings and
@@ -58,6 +65,9 @@ const nodeEnv = process.env.NODE_ENV ?? 'local';
     // it is, several lines above.
     ReviewsModule,
     TrainingModule,
+    // Module 11. A leaf, and deliberately dependent on nothing but identity —
+    // an alarm must not be able to fail because some other module is sick.
+    SosModule,
   ],
   controllers: [AppController],
   providers: [AppService],
