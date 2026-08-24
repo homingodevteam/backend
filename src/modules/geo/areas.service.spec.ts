@@ -43,6 +43,7 @@ function buildDeps() {
       attribution: 'OpenStreetMap test',
     }),
     geocodeCity: jest.fn(),
+    searchPlaces: jest.fn().mockResolvedValue([]),
   };
   return { prisma, geocoder };
 }

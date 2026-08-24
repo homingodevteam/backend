@@ -111,10 +111,25 @@ export class DispatchScoringService {
     excludeProIds: string[] = [],
     restrictToProIds: string[] | null = null,
   ): Promise<Pro[]> {
+    const now = new Date();
+
     return this.prisma.pro.findMany({
       where: {
         status: 'approved',
         isAvailable: true,
+        /*
+         * The Pro's own gate, alongside the admin's.
+         *
+         * `isAvailable` above says ops rostered them today; this says they
+         * have not paused themselves for the next half hour. They are
+         * separate columns on purpose — see `ProBreaksService` — and BOTH
+         * have to be clear for a Pro to be a candidate.
+         *
+         * A break ends by the clock passing `breakEndsAt`, so this compares
+         * rather than checking a flag: nothing runs to end a break, and a Pro
+         * whose app died mid-break returns to this pool on their own.
+         */
+        OR: [{ breakEndsAt: null }, { breakEndsAt: { lte: now } }],
         ...(cityId ? { cityId } : {}),
         services: { some: { serviceId, isActive: true } },
         ...(excludeProIds.length ? { id: { notIn: excludeProIds } } : {}),
@@ -137,6 +152,36 @@ export class DispatchScoringService {
     slotStart: Date,
     slotEnd: Date,
   ): Promise<FreeWindow | null> {
+    /*
+     * A break the Pro booked ahead occupies the slot exactly as committed
+     * work does.
+     *
+     * This is the half of the break feature that `findEligiblePros` cannot
+     * do. That query answers "can this Pro take a job right now"; dispatch
+     * also assigns work with a `slotStartAt` hours away, and a Pro who books
+     * lunch at 09:00 would otherwise be handed a 13:15 job at 09:05 — long
+     * before the break starts, so nothing about their current state stops it.
+     * By the time the break begins the job is already theirs.
+     *
+     * Read straight from the Pro row rather than cached with the bookings
+     * below: the cache is keyed per day and a break booked mid-morning has to
+     * take effect on the next dispatch run, not after the TTL expires.
+     */
+    const pro = await this.prisma.pro.findUnique({
+      where: { id: proId },
+      select: { scheduledBreakStartAt: true, scheduledBreakEndAt: true },
+    });
+
+    if (pro?.scheduledBreakStartAt && pro.scheduledBreakEndAt) {
+      const breakStart = pro.scheduledBreakStartAt.getTime();
+      const breakEnd = pro.scheduledBreakEndAt.getTime();
+
+      // Same half-open overlap test the committed bookings use below.
+      if (breakStart < slotEnd.getTime() && breakEnd > slotStart.getTime()) {
+        return null;
+      }
+    }
+
     const day = slotStart.toISOString().slice(0, 10);
     const cacheKey = `dispatch:freewindows:${proId}:${day}`;
 

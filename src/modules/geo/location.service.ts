@@ -301,6 +301,21 @@ export class LocationService {
   }
 
   /**
+   * Free text to a list of places, each with its own pin.
+   *
+   * The forward direction of `reverseGeocode`, and public for the same reason:
+   * someone typing their address during onboarding has no account yet.
+   *
+   * No area resolution here, deliberately. A search returns several candidates
+   * and resolving an area for each would be one grid lookup per row for
+   * answers the customer will discard — serviceability is decided once, when a
+   * result is chosen and its pin goes through `reverseGeocode`.
+   */
+  async searchPlaces(query: string) {
+    return this.geocoder.searchPlaces(query);
+  }
+
+  /**
    * The catalogue, answered for one pin. **The app's first screen.**
    *
    * Everything else here answers "can I book *this* service here?" one service

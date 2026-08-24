@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpStatus,
   Param,
@@ -21,11 +22,18 @@ import { RequireActorType } from '../identity/decorators/require-actor-type.deco
 import { AllowSuspendedProRead } from '../identity/decorators/allow-suspended-pro-read.decorator';
 import { ActorTypeGuard } from '../identity/guards/actor-type.guard';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
+import {
+  BreakStatusDto,
+  ScheduleBreakDto,
+  StartBreakDto,
+} from './dto/break.dto';
 import { CreateBankAccountDto } from './dto/create-bank-account.dto';
 import { IngestLocationDto } from './dto/ingest-location.dto';
 import { ProLocationDto } from './dto/pro-location.dto';
 import { HistoryQueryDto } from './dto/history-query.dto';
 import { KycUploadUrlResponseDto } from './dto/kyc-upload-url-response.dto';
+import { DocumentViewUrlResponseDto } from './dto/document-view-url-response.dto';
+import { MyDocumentDto } from './dto/my-document.dto';
 import { ProApplicationDto } from './dto/pro-application.dto';
 import { ProBankAccountDto } from './dto/pro-bank-account.dto';
 import { ProDto } from './dto/pro.dto';
@@ -38,6 +46,7 @@ import { UpdateBankAccountDto } from './dto/update-bank-account.dto';
 import { UpdateProDto } from './dto/update-pro.dto';
 import { KycDocumentsService } from './kyc-documents.service';
 import { ProApplicationsService } from './pro-applications.service';
+import { ProBreaksService } from './pro-breaks.service';
 import { ProBankAccountsService } from './pro-bank-accounts.service';
 import { ProsService } from './pros.service';
 import { ProStandingService } from './pro-standing.service';
@@ -56,6 +65,7 @@ export class ProsController {
     private readonly kycDocumentsService: KycDocumentsService,
     private readonly standingService: ProStandingService,
     private readonly profilePhotoService: ProProfilePhotoService,
+    private readonly breaksService: ProBreaksService,
   ) {}
 
   @Get()
@@ -177,6 +187,76 @@ export class ProsController {
     return this.prosService.ingestLocation(user.id, dto);
   }
 
+  /*
+   * ---------------------------------------------------------------------
+   * BREAKS — the one availability control the Pro actually owns
+   * ---------------------------------------------------------------------
+   * `isAvailable` is the admin roster flag and stays admin-only (US-6.12).
+   * These four routes move a SEPARATE pair of columns that dispatch reads
+   * alongside it, so a Pro can pause their own dispatch for half an hour
+   * without being able to roster themselves on. See `ProBreaksService`.
+   */
+
+  @Get('break')
+  @ApiOperation({ summary: 'My break state — running, booked, or neither' })
+  @ApiOkEnvelope(BreakStatusDto)
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.NOT_FOUND)
+  getBreak(@CurrentUser() user: AuthenticatedUser): Promise<BreakStatusDto> {
+    return this.breaksService.status(user.id);
+  }
+
+  @Post('break')
+  @ApiOperation({
+    summary: 'Start a break now — I stop being dispatched until it ends',
+  })
+  @ApiOkEnvelope(BreakStatusDto)
+  @ApiErrorEnvelope(
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.CONFLICT,
+  )
+  startBreak(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: StartBreakDto,
+  ): Promise<BreakStatusDto> {
+    return this.breaksService.start(user.id, dto);
+  }
+
+  @Post('break/end')
+  @ApiOperation({ summary: 'End my break early and go back into dispatch' })
+  @ApiOkEnvelope(BreakStatusDto)
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.NOT_FOUND)
+  endBreak(@CurrentUser() user: AuthenticatedUser): Promise<BreakStatusDto> {
+    return this.breaksService.end(user.id);
+  }
+
+  @Post('break/schedule')
+  @ApiOperation({
+    summary: 'Book a break window so no job is assigned into it',
+  })
+  @ApiOkEnvelope(BreakStatusDto)
+  @ApiErrorEnvelope(
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.NOT_FOUND,
+  )
+  scheduleBreak(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ScheduleBreakDto,
+  ): Promise<BreakStatusDto> {
+    return this.breaksService.schedule(user.id, dto);
+  }
+
+  @Delete('break/schedule')
+  @ApiOperation({ summary: 'Cancel my booked break window' })
+  @ApiOkEnvelope(BreakStatusDto)
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED, HttpStatus.NOT_FOUND)
+  cancelScheduledBreak(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<BreakStatusDto> {
+    return this.breaksService.cancelScheduled(user.id);
+  }
+
   @Get('applications')
   @ApiOperation({ summary: 'List my onboarding applications' })
   @ApiOkEnvelope(ProApplicationDto, { isArray: true })
@@ -214,6 +294,37 @@ export class ProsController {
     @Body() dto: RequestKycUploadUrlDto,
   ): Promise<{ key: string; uploadUrl: string; expiresIn: number }> {
     return this.kycDocumentsService.requestUploadUrl(user.id, dto);
+  }
+
+  @Get('documents')
+  @AllowSuspendedProRead()
+  @ApiOperation({
+    summary: 'My KYC documents and their verification state',
+  })
+  @ApiOkEnvelope(MyDocumentDto, { isArray: true })
+  @ApiErrorEnvelope(HttpStatus.UNAUTHORIZED)
+  listMyDocuments(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<MyDocumentDto[]> {
+    return this.kycDocumentsService.listMine(user.id);
+  }
+
+  @Get('documents/:docType/view-url')
+  @AllowSuspendedProRead()
+  @ApiOperation({
+    summary: 'A short-lived presigned URL to view one of my own documents',
+  })
+  @ApiOkEnvelope(DocumentViewUrlResponseDto)
+  @ApiErrorEnvelope(
+    HttpStatus.UNAUTHORIZED,
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.NOT_FOUND,
+  )
+  requestMyDocumentViewUrl(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('docType') docType: string,
+  ): Promise<{ viewUrl: string; expiresIn: number }> {
+    return this.kycDocumentsService.requestMyViewUrl(user.id, docType);
   }
 
   @Get('bank-accounts')

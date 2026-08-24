@@ -263,9 +263,9 @@ model AdminUser {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  phone    String  @unique
+  phone    String @unique
   fullName String
-  email    String  @unique
+  email    String @unique
 
   /// Firebase Authentication uid. The only login path for admins (password
   /// or Google, both via Firebase) — Firebase proves identity, this column
@@ -302,6 +302,7 @@ model AdminUser {
   resolvedDiscrepancies        ReconciliationDiscrepancy[]
   hiddenReviews                Review[]                    @relation("ReviewModerator")
   markedTrainingAttendance     OfflineTrainingAttendance[] @relation("AttendanceMarker")
+  acknowledgedSosAlerts        SosAlert[]
 
   @@map("admin_users")
 }
@@ -353,6 +354,7 @@ model Customer {
   reviews        Review[]
   orders         Order[]
   ledgerEntries  LedgerEntry[]
+  sosAlerts      SosAlert[]
 
   @@index([status, createdAt])
   @@map("customers")
@@ -438,10 +440,10 @@ model Pro {
 
   /// Why the Pro was last suspended. Retained after reinstatement so the
   /// moderation history survives — cleared only by the next suspension.
-  suspendedReason       String?
-  suspendedAt           DateTime?
-  suspendedByAdminId    String?    @db.Uuid
-  suspendedByAdmin      AdminUser? @relation("ProSuspender", fields: [suspendedByAdminId], references: [id], onDelete: SetNull)
+  suspendedReason    String?
+  suspendedAt        DateTime?
+  suspendedByAdminId String?    @db.Uuid
+  suspendedByAdmin   AdminUser? @relation("ProSuspender", fields: [suspendedByAdminId], references: [id], onDelete: SetNull)
 
   approvedApplicationId String?         @unique @db.Uuid
   approvedApplication   ProApplication? @relation("ApprovedApplication", fields: [approvedApplicationId], references: [id], onDelete: SetNull)
@@ -449,6 +451,31 @@ model Pro {
   /// GATE: on/off duty. Set only by an admin, never by the Pro.
   isAvailable           Boolean   @default(false)
   availabilityUpdatedAt DateTime?
+
+  /// When the Pro's current break ends. Null means they are not on one.
+  ///
+  /// A **second, Pro-owned availability gate**, deliberately separate from
+  /// `isAvailable`: that flag is the admin's answer to "is this person
+  /// rostered today", and a Pro pausing for thirty minutes must not be able
+  /// to overwrite it — going off break would then switch them on whether or
+  /// not the admin ever had.
+  ///
+  /// Dispatch treats a future value here exactly as it treats
+  /// `isAvailable: false` — the Pro is not a candidate. It is a timestamp
+  /// rather than a boolean so it expires on its own: nothing has to run to
+  /// end a break, and an app that is killed mid-break cannot strand the Pro
+  /// off-duty. Every read compares it to `now()`.
+  breakEndsAt   DateTime?
+  breakStartedAt DateTime?
+
+  /// A break booked for later, so no job is assigned into it.
+  ///
+  /// The point of scheduling ahead is that dispatch assigns work with a
+  /// `slotStartAt` in the future: a Pro who waits until 13:00 to tap "break"
+  /// has already been given the 13:15 job. Declaring the window early is what
+  /// keeps it clear.
+  scheduledBreakStartAt DateTime?
+  scheduledBreakEndAt   DateTime?
 
   pushToken          String?
   pushPlatform       String?
@@ -516,6 +543,8 @@ model Pro {
 
   @@index([status])
   @@index([isAvailable])
+  /// Filtered on by `findEligiblePros` on every dispatch run.
+  @@index([breakEndsAt])
   @@index([cityId])
   @@map("pros")
 }
@@ -762,6 +791,10 @@ model Booking {
   /// Online only, and plural: an expired or voided order is reissued rather
   /// than mutated, so the gateway history stays readable by receipt.
   orders               Order[]
+  /// Alarms raised during this visit. Plural: a single job can produce more
+  /// than one, and a second alarm after a stand-down is the most important
+  /// one in the table.
+  sosAlerts            SosAlert[]
 
   @@index([proId, status])
   @@index([customerId, createdAt])
@@ -1724,4 +1757,89 @@ model PlatformSetting {
   @@unique([key, cityId])
   @@index([cityId, key])
   @@map("platform_settings")
+}
+
+/// An alarm raised from the customer app, and everything ops needs to answer
+/// it without asking a question first.
+///
+/// ## Why the context is copied rather than joined
+///
+/// `bookingId` is here and so are `addressText`, `serviceTitle` and
+/// `proName`. That looks redundant until the booking advances a stage, the
+/// Pro is reassigned, or the address is edited — at which point a joined view
+/// would rewrite what the alarm said at the moment it was raised. An SOS is
+/// evidence, and evidence does not get to change afterwards. The snapshot is
+/// what ops read; the relation is for pulling the live record beside it.
+///
+/// ## Why `bookingId` is nullable
+///
+/// The Safety screen is reachable from the account tab with no booking in
+/// play. Someone who feels unsafe before the Pro has been assigned — or after
+/// the job closed — still gets to press the button.
+///
+/// ## Coordinates
+///
+/// Float, matching every other coordinate in this schema, and nullable
+/// because a fix is not always obtainable in the seconds an alarm allows.
+/// A null pair means the device could not get one, NOT that it did not try:
+/// `locationAccuracyM` and `locationAt` say how good the fix was and how old.
+/// An alarm with no coordinates is still an alarm and is never rejected for
+/// it — the address snapshot is the fallback, which is why both exist.
+model SosAlert {
+  id        String   @id @default(uuid()) @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customerId String   @db.Uuid
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  bookingId String?  @db.Uuid
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  /// active | false_alarm | closed. `false_alarm` is a normal ending and
+  /// carries no consequence for the customer — US-11.4. Nothing counts these,
+  /// rate-limits on them, or shows them back on the account.
+  status String @default("active")
+
+  /// When the customer pressed, per the device clock. Distinct from
+  /// `createdAt`, which is when it reached us — on a poor connection those
+  /// can be minutes apart, and the gap is exactly what ops must not lose.
+  raisedAt DateTime
+
+  lat               Float?
+  lng               Float?
+  /// Metres of uncertainty the platform reported with the fix.
+  locationAccuracyM Float?
+  /// When the fix itself was taken. A cached position is legitimate and
+  /// common; how stale it is decides whether ops trusts it.
+  locationAt        DateTime?
+
+  /// The snapshot. See the note above — copied on purpose, never refreshed.
+  addressText  String?
+  serviceTitle String?
+  proName      String?
+  /// So ops can call back without a lookup, and can still reach the customer
+  /// if the app dies mid-incident.
+  contactPhone String?
+
+  /// Who ended it and how it went, once someone has.
+  acknowledgedAt        DateTime?
+  acknowledgedByAdminId String?    @db.Uuid
+  acknowledgedByAdmin   AdminUser? @relation(fields: [acknowledgedByAdminId], references: [id], onDelete: SetNull)
+  resolvedAt            DateTime?
+  /// Required by the console before an alert may be closed. An alarm closed
+  /// with no account of what happened is an incident nobody can review.
+  resolutionNotes       String?
+
+  /// The client's own id for this press, so a retry from a queued alarm on a
+  /// bad connection lands once. See `services/sos.ts` in the app: the key is
+  /// minted at press time and survives a restart, which is what makes the
+  /// offline queue safe to drain more than once.
+  clientAlertId String? @unique
+
+  /// The live-queue query ops sits on all day.
+  @@index([status, raisedAt])
+  @@index([customerId, raisedAt])
+  @@index([bookingId])
+  @@map("sos_alerts")
 }
