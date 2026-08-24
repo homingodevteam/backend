@@ -9,9 +9,19 @@ import { RedisService } from '../redis/redis.service';
 import type {
   CityBounds,
   GeocoderPort,
+  PlaceSearchResult,
   ReverseGeocodeResult,
 } from './geocoding.types';
 import { boundsSizeKm } from './geocoding.types';
+
+/**
+ * Hits returned per search.
+ *
+ * Eight is about what fits above a phone keyboard. Beyond that is a list
+ * nobody scrolls — someone who cannot see their street in the first few rows
+ * types another word rather than reading on.
+ */
+const MAX_SEARCH_RESULTS = 8;
 
 interface GoogleAddressComponent {
   long_name: string;
@@ -103,6 +113,91 @@ export class GoogleGeocoder implements GeocoderPort {
    * Cached for the same thirty days as a reverse lookup. A city's outline is
    * the least volatile thing this API returns.
    */
+  async searchPlaces(query: string): Promise<PlaceSearchResult[]> {
+    const normalised = query.trim().replace(/\s+/g, ' ').toLowerCase();
+    const cacheKey = `geo:search:google:${normalised}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as PlaceSearchResult[];
+
+    /*
+     * The Geocoding API, not Places Autocomplete.
+     *
+     * Autocomplete returns predictions that each need a SECOND billed Place
+     * Details call to find out where they actually are. Geocoding returns the
+     * coordinates with the hit, which is the one thing a saved address cannot
+     * do without — one call per search instead of one plus N.
+     */
+    const url = new URL('/maps/api/geocode/json', this.options.baseUrl);
+    url.searchParams.set('address', normalised);
+    url.searchParams.set('key', this.options.apiKey);
+    url.searchParams.set('language', this.options.language);
+    if (this.options.region)
+      url.searchParams.set('region', this.options.region);
+
+    const body = await this.fetchJson(url);
+
+    const results = (body.results ?? [])
+      .slice(0, MAX_SEARCH_RESULTS)
+      .map((result, index): PlaceSearchResult | null => {
+        const point = result.geometry?.location;
+        /* A hit with no pin is unusable here — the whole point is the
+           coordinates — so it is dropped rather than shown as a row that
+           cannot be selected. */
+        if (!point) return null;
+
+        const components = result.address_components ?? [];
+        const named = (type: string): string | undefined =>
+          components.find((component) => component.types.includes(type))
+            ?.long_name;
+
+        /*
+         * The title is the part a person recognises. A building or premise
+         * name identifies a door where a road name identifies a kilometre of
+         * tarmac, which in India is usually the difference that matters.
+         */
+        const premise = named('subpremise') ?? named('premise');
+        const street = [named('street_number'), named('route')]
+          .filter(Boolean)
+          .join(' ');
+        const area =
+          named('sublocality_level_1') ??
+          named('sublocality') ??
+          named('neighborhood');
+        const city = named('locality') ?? named('administrative_area_level_2');
+
+        const title =
+          premise || street || area || city || result.formatted_address || '';
+        if (!title) return null;
+
+        const subtitle = [area, city, named('postal_code')]
+          .filter((part): part is string => !!part && part !== title)
+          .join(', ');
+
+        return {
+          id: `google:${index}`,
+          title,
+          /* Never left blank when the formatted line carries more than the
+             title already does — a row with an empty second line reads as a
+             rendering fault rather than as a place with a short name. */
+          subtitle:
+            subtitle ||
+            (result.formatted_address && result.formatted_address !== title
+              ? result.formatted_address
+              : ''),
+          lat: point.lat,
+          lng: point.lng,
+        };
+      })
+      .filter((result): result is PlaceSearchResult => result !== null);
+
+    await this.redis.set(
+      cacheKey,
+      JSON.stringify(results),
+      this.options.cacheTtlSeconds,
+    );
+    return results;
+  }
+
   async geocodeCity(name: string): Promise<CityBounds> {
     const cacheKey = `geo:city:google:${name.trim().toLowerCase()}`;
     const cached = await this.redis.get(cacheKey);

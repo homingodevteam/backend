@@ -118,6 +118,28 @@ export const PermissionCode = {
    * assembled in one view.
    */
   REVIEW_MODERATE: 'review.moderate',
+
+  // --- Module 11 · Safety ---------------------------------------------
+
+  /**
+   * Seeing the SOS queue and the detail of an alert.
+   *
+   * Read is split from respond because the queue must be visible to more
+   * people than may act on it — a supervisor watching for a cluster in one
+   * area needs the list, and an alarm nobody can see is the one failure this
+   * module cannot recover from. Grant this widely.
+   */
+  SOS_READ: 'sos.read',
+  /**
+   * Taking an alert and closing it out.
+   *
+   * Its own grant because acknowledgement is a promise: the customer's app
+   * shows "a person has this" the moment it is stamped, and whoever stamps it
+   * has told somebody frightened that help is coming. That should be a
+   * deliberate assignment to people on shift, not something that rides along
+   * with general read access.
+   */
+  SOS_RESPOND: 'sos.respond',
 } as const;
 
 export type PermissionCode =

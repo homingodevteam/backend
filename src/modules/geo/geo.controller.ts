@@ -21,10 +21,12 @@ import {
   LocationCatalogDto,
   LocationCatalogQueryDto,
   MyLocationDto,
+  PlaceSearchResultDto,
   PublicAreaDto,
   ReverseGeocodeDto,
   ReverseGeocodeQueryDto,
   ResolveLocationQueryDto,
+  SearchPlacesQueryDto,
   ServiceabilityDto,
 } from './dto/area.dto';
 import { LocationService } from './location.service';
@@ -104,6 +106,32 @@ export class GeoController {
     @Query() query: ReverseGeocodeQueryDto,
   ): Promise<ReverseGeocodeDto> {
     return this.location.reverseGeocode(query.lat, query.lng);
+  }
+
+  @Get('search')
+  @ApiOperation({
+    summary: 'Find a place by typing its name',
+    description:
+      'The forward direction of `/geo/reverse-geocode`, for the customer who ' +
+      'is **not standing at the address** — a relative flat, an office, a ' +
+      'place they are sending someone to. Dragging a pin across a city to ' +
+      'find it is the wrong tool; typing is.\n\n' +
+      'Every hit carries its own `lat`/`lng`, which is what makes a typed ' +
+      'address bookable: addresses are stored as a pin and the serviceable ' +
+      'area is resolved from it, so a result without coordinates would be a ' +
+      'line of text nobody could dispatch against.\n\n' +
+      'A query matching nothing returns **200 with an empty array**, not a ' +
+      '404 — the app draws "nothing matched" and "could not search" ' +
+      'differently, and only one of those is the fault of the customer.\n\n' +
+      'Public, like the rest of this controller: someone must be able to find ' +
+      'their street before creating an account.',
+  })
+  @ApiOkEnvelope(PlaceSearchResultDto, { isArray: true })
+  @ApiErrorEnvelope(HttpStatus.BAD_REQUEST, HttpStatus.SERVICE_UNAVAILABLE)
+  searchPlaces(
+    @Query() query: SearchPlacesQueryDto,
+  ): Promise<PlaceSearchResultDto[]> {
+    return this.location.searchPlaces(query.q);
   }
 
   @Get('catalog')

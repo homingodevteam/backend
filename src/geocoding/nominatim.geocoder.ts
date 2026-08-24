@@ -8,14 +8,23 @@ import { RedisService } from '../redis/redis.service';
 import type {
   CityBounds,
   GeocoderPort,
+  PlaceSearchResult,
   ReverseGeocodeResult,
 } from './geocoding.types';
 import { boundsSizeKm } from './geocoding.types';
+
+/** Hits per search. Matches the Google adapter — see `MAX_SEARCH_RESULTS`. */
+const MAX_SEARCH_RESULTS = 8;
 
 interface NominatimSearchResult {
   display_name?: string;
   /** [minLat, maxLat, minLng, maxLng], as strings. */
   boundingbox?: string[];
+  place_id?: number;
+  /** Strings here, unlike the reverse path where the pin was ours already. */
+  lat?: string;
+  lon?: string;
+  address?: Record<string, string | undefined>;
 }
 
 interface NominatimResponse {
@@ -60,6 +69,118 @@ export class NominatimGeocoder implements GeocoderPort {
    * Subject to the same one-request-per-second courtesy limit as the reverse
    * direction, and the same shared Redis slot enforces it.
    */
+  async searchPlaces(query: string): Promise<PlaceSearchResult[]> {
+    const normalised = query.trim().replace(/\s+/g, ' ').toLowerCase();
+    const cacheKey = `geo:search:nominatim:${normalised}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as PlaceSearchResult[];
+
+    const userAgent = this.config.get<string>('NOMINATIM_USER_AGENT')?.trim();
+    if (!userAgent) {
+      throw new ServiceUnavailableException('Geocoding is not configured');
+    }
+
+    /* The same one-per-second slot every other call here takes. Nominatim
+       enforces it per application, not per endpoint. */
+    const acquired = await this.redis.setIfAbsent(
+      'geo:nominatim:request-slot',
+      '1',
+      1,
+    );
+    if (!acquired) {
+      throw new ServiceUnavailableException('Geocoder is busy; retry shortly');
+    }
+
+    const baseUrl = this.config.get<string>(
+      'NOMINATIM_BASE_URL',
+      'https://nominatim.openstreetmap.org',
+    );
+    const url = new URL('/search', baseUrl);
+    url.searchParams.set('format', 'jsonv2');
+    url.searchParams.set('q', normalised);
+    url.searchParams.set('addressdetails', '1');
+    url.searchParams.set('limit', String(MAX_SEARCH_RESULTS));
+    /* Where the platform operates. Without it "indore" also matches a street
+       in the United States, and narrowing upstream keeps the count honest. */
+    url.searchParams.set('countrycodes', 'in');
+
+    let body: NominatimSearchResult[];
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': userAgent,
+          'Accept-Language': this.config.get<string>(
+            'NOMINATIM_ACCEPT_LANGUAGE',
+            'en',
+          ),
+        },
+        signal: AbortSignal.timeout(
+          this.numberConfig('NOMINATIM_TIMEOUT_MS', 4000),
+        ),
+      });
+      if (!response.ok) {
+        throw new ServiceUnavailableException(
+          `Geocoder returned HTTP ${response.status}`,
+        );
+      }
+      body = (await response.json()) as NominatimSearchResult[];
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) throw error;
+      throw new ServiceUnavailableException('Geocoder is unreachable');
+    }
+
+    /* No match is a real answer, not a failure — see `GeocoderPort`. */
+    if (!Array.isArray(body)) return [];
+
+    const results = body
+      .map((entry, index): PlaceSearchResult | null => {
+        const lat = Number(entry.lat);
+        const lng = Number(entry.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+        const address = entry.address ?? {};
+        const street = [address.house_number, address.road ?? address.building]
+          .filter(Boolean)
+          .join(', ');
+        const area = address.neighbourhood ?? address.suburb;
+        const city =
+          address.city ?? address.town ?? address.village ?? address.county;
+
+        /*
+         * Nominatim leads `display_name` with the most specific part, so its
+         * first segment is a usable title when the structured fields are thin
+         * — unlike Google, whose line leads with a building number.
+         */
+        const title =
+          street || area || city || entry.display_name?.split(', ')[0] || '';
+        if (!title) return null;
+
+        const subtitle = [area, city, address.postcode]
+          .filter((part): part is string => !!part && part !== title)
+          .join(', ');
+
+        return {
+          id: `nominatim:${entry.place_id ?? index}`,
+          title,
+          subtitle:
+            subtitle ||
+            (entry.display_name && entry.display_name !== title
+              ? entry.display_name
+              : ''),
+          lat,
+          lng,
+        };
+      })
+      .filter((result): result is PlaceSearchResult => result !== null);
+
+    await this.redis.set(
+      cacheKey,
+      JSON.stringify(results),
+      this.numberConfig('NOMINATIM_CACHE_TTL_SECONDS', 86400),
+    );
+    return results;
+  }
+
   async geocodeCity(name: string): Promise<CityBounds> {
     const cacheKey = `geo:city:nominatim:${name.trim().toLowerCase()}`;
     const cached = await this.redis.get(cacheKey);

@@ -30,7 +30,18 @@ const CUSTOMER = { pinLat: 22.7533, pinLng: 75.8937 };
 
 function buildDeps() {
   const prisma = {
-    pro: { findMany: jest.fn().mockResolvedValue([]) },
+    pro: {
+      findMany: jest.fn().mockResolvedValue([]),
+      /*
+       * `computeFreeWindow` reads the Pro's booked break window. The default
+       * is a Pro with no break booked, which is what every pre-existing case
+       * in this file assumes.
+       */
+      findUnique: jest.fn().mockResolvedValue({
+        scheduledBreakStartAt: null,
+        scheduledBreakEndAt: null,
+      }),
+    },
     booking: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(null),
@@ -142,6 +153,35 @@ describe('DispatchScoringService · findEligiblePros', () => {
     };
     expect(where.id).toEqual({ in: ['pro-1'] });
   });
+
+  /**
+   * The Pro's own gate, alongside the admin's.
+   *
+   * `isAvailable` is ops saying this person is rostered today; `breakEndsAt`
+   * is the Pro saying they have paused themselves for half an hour. Both have
+   * to be clear, and a query that dropped this half would keep assigning work
+   * to somebody the app is telling "no new jobs will be assigned to you".
+   *
+   * Expressed as a comparison rather than a flag because a break expires on
+   * its own — nothing runs to clear it, so a Pro whose app died mid-break has
+   * to return to this pool by the clock alone.
+   */
+  it('excludes a Pro whose break has not run out yet', async () => {
+    const deps = buildDeps();
+    await build(deps).findEligiblePros('svc-1', 'city-1');
+
+    const { where } = deps.prisma.pro.findMany.mock.calls[0][0] as {
+      where: { OR?: unknown[] };
+    };
+
+    expect(where.OR).toHaveLength(2);
+    // Never on a break at all...
+    expect(where.OR?.[0]).toEqual({ breakEndsAt: null });
+    // ...or on one that has already elapsed.
+    expect(where.OR?.[1]).toEqual({
+      breakEndsAt: { lte: expect.any(Date) },
+    });
+  });
 });
 
 describe('DispatchScoringService · computeFreeWindow', () => {
@@ -150,6 +190,53 @@ describe('DispatchScoringService · computeFreeWindow', () => {
 
   it('gives the window when nothing is committed', async () => {
     const deps = buildDeps();
+    await expect(
+      build(deps).computeFreeWindow('pro-1', slotStart, slotEnd),
+    ).resolves.toEqual({ start: slotStart, end: slotEnd });
+  });
+
+  /**
+   * The half of the break feature that `findEligiblePros` cannot do.
+   *
+   * That query answers "can this Pro take a job right now". Dispatch also
+   * assigns work with a `slotStartAt` hours away, so a Pro who books lunch at
+   * 09:00 would otherwise be handed a 10:30 job at 09:05 — long before the
+   * break starts, when nothing about their current state stops it. By the
+   * time the break began the job would already be theirs.
+   */
+  it('refuses a slot that overlaps a booked break', async () => {
+    const deps = buildDeps();
+    deps.prisma.pro.findUnique.mockResolvedValue({
+      scheduledBreakStartAt: new Date('2026-08-12T10:30:00.000Z'),
+      scheduledBreakEndAt: new Date('2026-08-12T11:00:00.000Z'),
+    });
+
+    await expect(
+      build(deps).computeFreeWindow('pro-1', slotStart, slotEnd),
+    ).resolves.toBeNull();
+  });
+
+  /** Half-open, exactly as the committed-booking test below expects. */
+  it('allows a slot that ends exactly when a booked break starts', async () => {
+    const deps = buildDeps();
+    deps.prisma.pro.findUnique.mockResolvedValue({
+      scheduledBreakStartAt: slotEnd,
+      scheduledBreakEndAt: new Date('2026-08-12T11:30:00.000Z'),
+    });
+
+    await expect(
+      build(deps).computeFreeWindow('pro-1', slotStart, slotEnd),
+    ).resolves.toEqual({ start: slotStart, end: slotEnd });
+  });
+
+  /** A half-written window cannot be compared, so it must not block anything. */
+  it('ignores a break window with only one end set', async () => {
+    const deps = buildDeps();
+    deps.prisma.pro.findUnique.mockResolvedValue({
+      scheduledBreakStartAt: new Date('2026-08-12T10:30:00.000Z'),
+      scheduledBreakEndAt: null,
+    });
+
     await expect(
       build(deps).computeFreeWindow('pro-1', slotStart, slotEnd),
     ).resolves.toEqual({ start: slotStart, end: slotEnd });
