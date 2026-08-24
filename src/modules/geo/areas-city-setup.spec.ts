@@ -42,6 +42,7 @@ function buildDeps() {
   const geocoder = {
     minIntervalMs: 0,
     reverseGeocode: jest.fn(),
+    searchPlaces: jest.fn().mockResolvedValue([]),
     geocodeCity: jest.fn().mockResolvedValue({
       matchedName: 'Indore, Madhya Pradesh, India',
       ...INDORE,

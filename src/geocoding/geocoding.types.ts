@@ -53,8 +53,41 @@ export interface CityBounds {
   attribution: string;
 }
 
+/**
+ * One hit from a free-text address search.
+ *
+ * Carries its own pin, which is the entire reason the endpoint exists. A
+ * customer typing "vijay nagar" needs coordinates before the address can be
+ * saved — `customer_addresses` stores a lat/lng and the area is resolved from
+ * it — so a result without one is a line of text that cannot be booked
+ * against.
+ */
+export interface PlaceSearchResult {
+  /** Stable within one response; usable as a list key. */
+  id: string;
+  /** First line — the part a person recognises. Never empty. */
+  title: string;
+  /** Area, city, postcode. Empty when the provider offers nothing more. */
+  subtitle: string;
+  lat: number;
+  lng: number;
+}
+
 export interface GeocoderPort {
   reverseGeocode(lat: number, lng: number): Promise<ReverseGeocodeResult>;
+
+  /**
+   * Free text to a list of places — the forward direction of `reverseGeocode`.
+   *
+   * Distinct from `geocodeCity`, which answers "how big is this city" for the
+   * admin grid tooling and returns exactly one box. This answers "which places
+   * match what the customer is typing" and returns several, each with a pin.
+   *
+   * An empty array is a real answer — nothing matched — and must not be
+   * confused with a failure. The app draws "nothing matched" and "could not
+   * search" differently, and only one of them is the customer's problem.
+   */
+  searchPlaces(query: string): Promise<PlaceSearchResult[]>;
 
   /**
    * A city name to the box it occupies — the forward direction.

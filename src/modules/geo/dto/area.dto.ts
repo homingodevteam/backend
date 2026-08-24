@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -928,4 +928,60 @@ export class PreviewGridResultDto {
 
   @ApiProperty({ type: [PreviewCellDto] })
   cells: PreviewCellDto[];
+}
+
+/**
+ * What the address-search endpoint accepts.
+ *
+ * A minimum length rather than any non-empty string: "in" matches half the
+ * country, the provider is billed per call, and the customer reads a page of
+ * noise as the app misunderstanding them rather than as not having typed
+ * enough yet. Three characters is where a query starts being about a place.
+ */
+export class SearchPlacesQueryDto {
+  @ApiProperty({
+    example: 'vijay nagar',
+    description: 'Free text — a street, an area, a landmark.',
+    minLength: 3,
+    maxLength: 120,
+  })
+  @IsString()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @MinLength(3)
+  /* Capped because the whole string reaches a provider that charges per call
+     and does nothing useful with an essay. */
+  @MaxLength(120)
+  q: string;
+}
+
+/**
+ * One search hit: an address **and** the pin it stands for.
+ *
+ * The coordinates are why this endpoint exists rather than the client
+ * filtering a list. `customer_addresses` stores a lat/lng and the serviceable
+ * area is resolved from it, so a result without one is a line of text that
+ * cannot be booked against.
+ *
+ * Split into `title`/`subtitle` because that is what the app's result row
+ * draws — the recognisable part above, everything placing it below. Composing
+ * that split client-side would mean slicing a string with no guaranteed field
+ * order, which is the mistake `localityCandidates` exists to avoid.
+ */
+export class PlaceSearchResultDto {
+  @ApiProperty({ example: 'google:0' })
+  id: string;
+
+  @ApiProperty({ example: 'Vijay Nagar' })
+  title: string;
+
+  @ApiProperty({ example: 'Indore, 452010' })
+  subtitle: string;
+
+  @ApiProperty({ example: 22.7533 })
+  lat: number;
+
+  @ApiProperty({ example: 75.8937 })
+  lng: number;
 }
